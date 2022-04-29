@@ -21,6 +21,8 @@ class Snowflake:
                 self.pos[1] += self.gravity * speed
             else:
                 self.enabled = False
+                coll_movement = (self.gravity * speed)/16
+                self.pos[0] += coll_movement
             if self.wind != 0:
                 w = (self.gravity * speed)/8
                 if self.wind < 0: w = -w                
