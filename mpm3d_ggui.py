@@ -43,7 +43,11 @@ grid_v = ti.Vector.field(dim, float, (n_grid, ) * dim)
 grid_m = ti.field(float, (n_grid, ) * dim)
 used = ti.field(int, n_particles)
 
+
+
 neighbour = (3, ) * dim
+neighbour1 = (3, ) * dim
+
 
 WATER = 0
 JELLY = 1
@@ -52,61 +56,77 @@ SNOW = 2
 
 @ti.kernel
 def substep(g_x: float, g_y: float, g_z: float):
-    for I in ti.grouped(grid_m):
+    for I in ti.grouped(grid_m): #sets all grid masses and velocities to 0
         grid_v[I] = ti.zero(grid_v[I])
         grid_m[I] = 0
     ti.block_dim(n_grid)
+    #p is index, not the particle itself
     for p in x:
-        if used[p] == 0:
-            continue
-        Xp = x[p] / dx
-        base = int(Xp - 0.5)
-        fx = Xp - base
-        w = [0.5 * (1.5 - fx)**2, 0.75 - (fx - 1)**2, 0.5 * (fx - 0.5)**2]
+        if materials[p] == SNOW:
+            #MPM step 1, setting grid masses and velocities
+            Xp = x[p] / dx #scaling particles position to match grid space?
+            baseX = int(Xp[0]) 
+            baseY = int(Xp[1])
+            baseZ = int(Xp[2])
+            diffX = Xp[0] - baseX
+            diffY = Xp[1] - baseY
+            diffZ = Xp[2] - baseZ
+            #checks grid points up to 2 grid points away since N will be 0 where the distance between the points position and grid points is over 2
+            for offset in ti.static(ti.grouped(ti.ndrange(*neighbour1))):
+                #dposX = (offset[0] - diffX) * dx
+                #dposY = (offset[1] - diffY) * dx
+                #dposZ = (offset[2] - diffZ) * dx
 
-        F[p] = (ti.Matrix.identity(float, 3) +
-                dt * C[p]) @ F[p]  # deformation gradient update
+                weight = 1.0
+                w = [0.5 * (1.5 - diffX)**2, 0.75 - (diffY - 1)**2, 0.5 * (diffZ - 0.5)**2]
+                w4 = [0.5 * (1.5 - diffX)**2, 0.75 - (diffY - 1)**2, 0.5 * (diffZ - 0.5)**2]
+                for i in ti.static(range(dim)):
+                    weight *= w1[i]
+                #grid_v[base + offset] += weight * (p_mass * v[p] + affine @ dpos)
+                grid_m[baseX + offset[0], baseY + offset[1], baseZ + offset[2]] += weight * p_mass
+        else:
+            if used[p] == 0:
+                continue
+            Xp = x[p] / dx
+            base = int(Xp - 0.5)
+            fx = Xp - base
+            w = [0.5 * (1.5 - fx)**2, 0.75 - (fx - 1)**2, 0.5 * (fx - 0.5)**2]
 
-        h = ti.exp(
-            10 *
-            (1.0 -
-             Jp[p]))  # Hardening coefficient: snow gets harder when compressed
-        if materials[p] == JELLY:  # jelly, make it softer
-            h = 0.3
-        mu, la = mu_0 * h, lambda_0 * h
-        if materials[p] == WATER:  # liquid
-            mu = 0.0
+            F[p] = (ti.Matrix.identity(float, 3) + dt * C[p]) @ F[p]  # deformation gradient update
 
-        U, sig, V = ti.svd(F[p])
-        J = 1.0
-        for d in ti.static(range(3)):
-            new_sig = sig[d, d]
-            if materials[p] == SNOW:  # Snow
-                new_sig = min(max(sig[d, d], 1 - 2.5e-2),
-                              1 + 4.5e-3)  # Plasticity
-            Jp[p] *= sig[d, d] / new_sig
-            sig[d, d] = new_sig
-            J *= new_sig
-        if materials[
-                p] == WATER:  # Reset deformation gradient to avoid numerical instability
-            new_F = ti.Matrix.identity(float, 3)
-            new_F[0, 0] = J
-            F[p] = new_F
-        elif materials[p] == SNOW:
-            F[p] = U @ sig @ V.transpose(
-            )  # Reconstruct elastic deformation gradient after plasticity
-        stress = 2 * mu * (F[p] - U @ V.transpose()) @ F[p].transpose(
-        ) + ti.Matrix.identity(float, 3) * la * J * (J - 1)
-        stress = (-dt * p_vol * 4) * stress / dx**2
-        affine = stress + p_mass * C[p]
+            h = ti.exp(10 * (1.0 - Jp[p]))  # Hardening coefficient: snow gets harder when compressed
+            if materials[p] == JELLY:  # jelly, make it softer
+                h = 0.3
+            mu, la = mu_0 * h, lambda_0 * h
+            if materials[p] == WATER:  # liquid
+                mu = 0.0
 
-        for offset in ti.static(ti.grouped(ti.ndrange(*neighbour))):
-            dpos = (offset - fx) * dx
-            weight = 1.0
-            for i in ti.static(range(dim)):
-                weight *= w[offset[i]][i]
-            grid_v[base + offset] += weight * (p_mass * v[p] + affine @ dpos)
-            grid_m[base + offset] += weight * p_mass
+            U, sig, V = ti.svd(F[p])
+            J = 1.0
+            for d in ti.static(range(3)):
+                new_sig = sig[d, d]
+                if materials[p] == SNOW:  # Snow
+                    new_sig = min(max(sig[d, d], 1 - 2.5e-2), 1 + 4.5e-3)  # Plasticity
+                Jp[p] *= sig[d, d] / new_sig
+                sig[d, d] = new_sig
+                J *= new_sig
+            if materials[p] == WATER:  # Reset deformation gradient to avoid numerical instability
+                new_F = ti.Matrix.identity(float, 3)
+                new_F[0, 0] = J
+                F[p] = new_F
+            elif materials[p] == SNOW:
+                F[p] = U @ sig @ V.transpose()  # Reconstruct elastic deformation gradient after plasticity
+            stress = 2 * mu * (F[p] - U @ V.transpose()) @ F[p].transpose() + ti.Matrix.identity(float, 3) * la * J * (J - 1)
+            stress = (-dt * p_vol * 4) * stress / dx**2
+            affine = stress + p_mass * C[p]
+
+            for offset in ti.static(ti.grouped(ti.ndrange(*neighbour))):
+                dpos = (offset - fx) * dx
+                weight = 1.0
+                for i in ti.static(range(dim)):
+                    weight *= w[offset[i]][i]
+                grid_v[base + offset] += weight * (p_mass * v[p] + affine @ dpos)
+                grid_m[base + offset] += weight * p_mass
     for I in ti.grouped(grid_m):
         if grid_m[I] > 0:
             grid_v[I] /= grid_m[I]
@@ -150,10 +170,11 @@ def init_cube_vol(first_par: int, last_par: int, x_begin: float,
                   y_begin: float, z_begin: float, x_size: float, y_size: float,
                   z_size: float, material: int):
     for i in range(first_par, last_par):
-        x[i] = ti.Vector([ti.random() for i in range(dim)]) * ti.Vector(
-            [x_size, y_size, z_size]) + ti.Vector([x_begin, y_begin, z_begin])
+        #x[i] is set to a random position in the bounds of the volume of the cube representing the position of particle i
+        x[i] = ti.Vector([ti.random() for i in range(dim)]) * ti.Vector([x_size, y_size, z_size]) + ti.Vector([x_begin, y_begin, z_begin]) 
         Jp[i] = 1
         F[i] = ti.Matrix([[1, 0, 0], [0, 1, 0], [0, 0, 1]])
+        #v[i] represents the velocity of particle i
         v[i] = ti.Vector([0.0, 0.0, 0.0])
         materials[i] = material
         colors_random[i] = ti.Vector(
