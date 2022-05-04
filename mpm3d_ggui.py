@@ -108,6 +108,9 @@ def substep(g_x: float, g_y: float, g_z: float):
                         weight *= w12[i]
                 grid_m[baseX + offset[0] - 1, baseY + offset[1] - 1, baseZ + offset[2] - 1] += weight * p_mass
                 grid_v[baseX + offset[0] - 1, baseY + offset[1] - 1, baseZ + offset[2] - 1] += weight * (p_mass * v[p]) / grid_m[baseX + offset[0] - 1, baseY + offset[1] - 1, baseZ + offset[2] - 1]
+
+                #MPM step 3
+                
         else:
             if used[p] == 0:
                 continue
