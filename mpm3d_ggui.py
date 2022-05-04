@@ -5,10 +5,10 @@ import taichi as ti
 arch = ti.vulkan if ti._lib.core.with_vulkan() else ti.cuda
 ti.init(arch=arch)
 
-#dim, n_grid, steps, dt = 2, 128, 20, 2e-4
+# dim, n_grid, steps, dt = 2, 128, 20, 2e-4
 #dim, n_grid, steps, dt = 2, 256, 32, 1e-4
-#dim, n_grid, steps, dt = 3, 32, 25, 4e-4
-dim, n_grid, steps, dt = 3, 64, 25, 2e-4
+dim, n_grid, steps, dt = 3, 64, 5, 4e-4
+# dim, n_grid, steps, dt = 3, 64, 25, 2e-4
 #dim, n_grid, steps, dt = 3, 128, 5, 1e-4
 
 n_particles = n_grid**dim // 2**(dim - 1)
@@ -23,7 +23,13 @@ p_mass = p_vol * p_rho
 g_x = 0
 g_y = -9.8
 g_z = 0
-bound = 3
+bound = 1
+# @ti.func
+# def bound (xg_x: float) -> int:
+#     x = ti.cast(xg_x, int)
+#     terrian = {0:0, 1:1, 2:2, 3:3, 4:4, 5:5, 6:6, 7:7, 8:8, 9:9, 10:10, 11:11, 12:12, 13:13, 14:14, 15:15, 16:16}
+#     return terrian[x]
+
 E = 1000  # Young's modulus
 nu = 0.2  #  Poisson's ratio
 mu_0, lambda_0 = E / (2 * (1 + nu)), E * nu / (
@@ -48,7 +54,7 @@ neighbour = (3, ) * dim
 WATER = 0
 JELLY = 1
 SNOW = 2
-
+SOIL = 3
 
 @ti.kernel
 def substep(g_x: float, g_y: float, g_z: float):
@@ -56,8 +62,10 @@ def substep(g_x: float, g_y: float, g_z: float):
         grid_v[I] = ti.zero(grid_v[I])
         grid_m[I] = 0
     ti.block_dim(n_grid)
+
+    #  particle interactions
     for p in x:
-        if used[p] == 0:
+        if used[p] == 0 :
             continue
         Xp = x[p] / dx
         base = int(Xp - 0.5)
@@ -111,11 +119,16 @@ def substep(g_x: float, g_y: float, g_z: float):
         if grid_m[I] > 0:
             grid_v[I] /= grid_m[I]
         grid_v[I] += dt * ti.Vector([g_x, g_y, g_z])
+        
         cond = (I < bound) & (grid_v[I] < 0) | \
                (I > n_grid - bound) & (grid_v[I] > 0)
         grid_v[I] = 0 if cond else grid_v[I]
     ti.block_dim(n_grid)
+
+    # position update
     for p in x:
+        if materials[p] == SOIL:
+            continue
         if used[p] == 0:
             continue
         Xp = x[p] / dx
@@ -208,15 +221,27 @@ def set_color_by_material(material_colors: ti.types.ndarray()):
 
 print("Loading presets...this might take a minute")
 
-presets = [[
-    CubeVolume(ti.Vector([0.55, 0.05, 0.55]), ti.Vector([0.4, 0.4, 0.4]),
-               WATER),
-],
+terrain = []
+for xx in np.linspace(0, 0.9, num = 10):
+    for yy in np.linspace(0, 0.9, num = 10):
+        z = np.random.choice(np.linspace(0, 0.5, num = 10), size = 1)[0]
+        single_terrian = CubeVolume(ti.Vector([xx, 0, yy]),
+                          ti.Vector([0.1, z, 0.1]), SOIL)
+        terrain.append(single_terrian)
+
+snowfall = [
+               CubeVolume(ti.Vector([0.01, 0.8, 0.01]),
+                          ti.Vector([0.99, 0.2, 0.99]), SNOW),
+            ]
+
+snowfall.extend(terrain)
+
+presets = [ snowfall,
            [
                CubeVolume(ti.Vector([0.05, 0.05, 0.05]),
                           ti.Vector([0.3, 0.4, 0.3]), WATER),
                CubeVolume(ti.Vector([0.65, 0.05, 0.65]),
-                          ti.Vector([0.3, 0.4, 0.3]), WATER),
+                          ti.Vector([0.3, 0.4, 0.3]), SOIL),
            ],
            [
                CubeVolume(ti.Vector([0.6, 0.05, 0.6]),
@@ -233,20 +258,20 @@ presets = [[
                           ti.Vector([0.24, 0.24, 0.24]), JELLY),
 ]]
 preset_names = [
-    "Single Dam Break",
+    "Snow Falling Mountain",
     "Double Dam Break",
     "Water Snow Jelly",
     "snow",
 ]
 
-curr_preset_id = 3
+curr_preset_id = 0
 
 paused = False
 
 use_random_colors = False
-particles_radius = 0.02
+particles_radius = 0.01
 
-material_colors = [(0.1, 0.6, 0.9), (0.93, 0.33, 0.23), (1.0, 1.0, 1.0)]
+material_colors = [(0.1, 0.6, 0.9), (0.93, 0.33, 0.23), (1.0, 1.0, 1.0), (0.2, 0.6, 0.2)]
 
 
 def init():
@@ -338,6 +363,7 @@ while window.running:
 
     if not paused:
         for s in range(steps):
+            # bound = np.random.randint(2, high = 20)
             substep(g_x, g_y, g_z)
 
     render()
