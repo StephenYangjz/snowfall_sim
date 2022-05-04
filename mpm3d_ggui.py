@@ -5,10 +5,10 @@ import taichi as ti
 arch = ti.vulkan if ti._lib.core.with_vulkan() else ti.cuda
 ti.init(arch=arch)
 
-#dim, n_grid, steps, dt = 2, 128, 20, 2e-4
+# dim, n_grid, steps, dt = 2, 128, 20, 2e-4
 #dim, n_grid, steps, dt = 2, 256, 32, 1e-4
-#dim, n_grid, steps, dt = 3, 32, 25, 4e-4
-dim, n_grid, steps, dt = 3, 64, 25, 2e-4
+dim, n_grid, steps, dt = 3, 64, 5, 4e-4
+# dim, n_grid, steps, dt = 3, 64, 25, 2e-4
 #dim, n_grid, steps, dt = 3, 128, 5, 1e-4
 
 n_particles = n_grid**dim // 2**(dim - 1)
@@ -24,6 +24,12 @@ g_x = 0
 g_y = -9.8
 g_z = 0
 bound = 3
+# @ti.func
+# def bound (xg_x: float) -> int:
+#     x = ti.cast(xg_x, int)
+#     terrian = {0:0, 1:1, 2:2, 3:3, 4:4, 5:5, 6:6, 7:7, 8:8, 9:9, 10:10, 11:11, 12:12, 13:13, 14:14, 15:15, 16:16}
+#     return terrian[x]
+
 E = 1000  # Young's modulus
 nu = 0.2  #  Poisson's ratio
 mu_0, lambda_0 = E / (2 * (1 + nu)), E * nu / (
@@ -46,13 +52,13 @@ used = ti.field(int, n_particles)
 
 
 neighbour = (3, ) * dim
-neighbour1 = (3, ) * dim
+neighbour1 = (4, ) * dim
 
 
 WATER = 0
 JELLY = 1
 SNOW = 2
-
+SOIL = 3
 
 @ti.kernel
 def substep(g_x: float, g_y: float, g_z: float):
@@ -73,17 +79,35 @@ def substep(g_x: float, g_y: float, g_z: float):
             diffZ = Xp[2] - baseZ
             #checks grid points up to 2 grid points away since N will be 0 where the distance between the points position and grid points is over 2
             for offset in ti.static(ti.grouped(ti.ndrange(*neighbour1))):
-                #dposX = (offset[0] - diffX) * dx
-                #dposY = (offset[1] - diffY) * dx
-                #dposZ = (offset[2] - diffZ) * dx
+                #don't try to access negative grid indices
+                if (baseX + offset[0] - 1 < 0):
+                    continue
+                if (baseY + offset[1] - 1 < 0):
+                    continue 
+                if (baseZ + offset[2] - 1 < 0):
+                    continue
+                #distance between particle position and grid position
+                diffX = baseX - (baseX + offset[0] - 1)
+                diffY = baseY - (baseY + offset[1] - 1)
+                diffZ = baseZ - (baseZ + offset[2] - 1)
+                abs_diffX = abs(diffX)
+                abs_diffY = abs(diffY)
+                abs_diffZ = abs(diffZ)
+
+                distances = ti.Vector([abs_diffX, abs_diffY, abs_diffZ])
 
                 weight = 1.0
-                w = [0.5 * (1.5 - diffX)**2, 0.75 - (diffY - 1)**2, 0.5 * (diffZ - 0.5)**2]
-                w4 = [0.5 * (1.5 - diffX)**2, 0.75 - (diffY - 1)**2, 0.5 * (diffZ - 0.5)**2]
+                #equation to be used if distance between particle is < 1, w01[0] is the calcuation for the x position, w01[1] is calculation for the y position, etc
+                w01 = [0.5 * (abs_diffX)**3 - diffX**2 + 2.0 / 3.0,0.5 * (abs_diffY)**3 - diffY**2 + 2.0 / 3.0, 0.5 * (abs_diffZ)**3 - diffZ**2 + 2.0 / 3.0]
+                #equation to be used if distance between particle is > 1, w12[0] is the calcuation for the x position, w12[1] is calculation for the y position, etc (implicit less than 2 from offsets used)
+                w12 = [-1.0/6.0 * (abs_diffX)**3 + diffX**2 - 2 * abs_diffX + 4.0 / 3.0, -1.0/6.0 * (abs_diffY)**3 + diffY**2 - 2 * abs_diffY + 4.0 / 3.0, -1.0/6.0 * (abs_diffZ)**3 + diffZ**2 - 2 * abs_diffZ + 4.0 / 3.0]
                 for i in ti.static(range(dim)):
-                    weight *= w1[i]
-                #grid_v[base + offset] += weight * (p_mass * v[p] + affine @ dpos)
-                grid_m[baseX + offset[0], baseY + offset[1], baseZ + offset[2]] += weight * p_mass
+                    if distances[i] < 1:
+                        weight *= w01[i]
+                    else:
+                        weight *= w12[i]
+                grid_m[baseX + offset[0] - 1, baseY + offset[1] - 1, baseZ + offset[2] - 1] += weight * p_mass
+                grid_v[baseX + offset[0] - 1, baseY + offset[1] - 1, baseZ + offset[2] - 1] += weight * (p_mass * v[p]) / grid_m[baseX + offset[0] - 1, baseY + offset[1] - 1, baseZ + offset[2] - 1]
         else:
             if used[p] == 0:
                 continue
@@ -127,15 +151,20 @@ def substep(g_x: float, g_y: float, g_z: float):
                     weight *= w[offset[i]][i]
                 grid_v[base + offset] += weight * (p_mass * v[p] + affine @ dpos)
                 grid_m[base + offset] += weight * p_mass
+
+    #  particle interactions
     for I in ti.grouped(grid_m):
         if grid_m[I] > 0:
             grid_v[I] /= grid_m[I]
         grid_v[I] += dt * ti.Vector([g_x, g_y, g_z])
+        
         cond = (I < bound) & (grid_v[I] < 0) | \
                (I > n_grid - bound) & (grid_v[I] > 0)
         grid_v[I] = 0 if cond else grid_v[I]
     ti.block_dim(n_grid)
     for p in x:
+        if materials[p] == SOIL:
+            continue
         if used[p] == 0:
             continue
         Xp = x[p] / dx
@@ -229,15 +258,27 @@ def set_color_by_material(material_colors: ti.types.ndarray()):
 
 print("Loading presets...this might take a minute")
 
-presets = [[
-    CubeVolume(ti.Vector([0.55, 0.05, 0.55]), ti.Vector([0.4, 0.4, 0.4]),
-               WATER),
-],
+terrain = []
+for xx in np.linspace(0.05, 0.9, num = 10):
+    for yy in np.linspace(0.05, 0.9, num = 10):
+        z = np.random.choice(np.linspace(0, 0.5, num = 10), size = 1)[0]
+        single_terrian = CubeVolume(ti.Vector([xx, 0, yy]),
+                          ti.Vector([0.1, z, 0.1]), SOIL)
+        terrain.append(single_terrian)
+
+snowfall = [
+               CubeVolume(ti.Vector([0.05, 0.8, 0.05]),
+                          ti.Vector([0.95, 0.2, 0.95]), SNOW),
+            ]
+
+snowfall.extend(terrain)
+
+presets = [ snowfall,
            [
                CubeVolume(ti.Vector([0.05, 0.05, 0.05]),
                           ti.Vector([0.3, 0.4, 0.3]), WATER),
                CubeVolume(ti.Vector([0.65, 0.05, 0.65]),
-                          ti.Vector([0.3, 0.4, 0.3]), WATER),
+                          ti.Vector([0.3, 0.4, 0.3]), SOIL),
            ],
            [
                CubeVolume(ti.Vector([0.6, 0.05, 0.6]),
@@ -254,20 +295,20 @@ presets = [[
                           ti.Vector([0.24, 0.24, 0.24]), JELLY),
 ]]
 preset_names = [
-    "Single Dam Break",
+    "Snow Falling Mountain",
     "Double Dam Break",
     "Water Snow Jelly",
     "snow",
 ]
 
-curr_preset_id = 3
+curr_preset_id = 0
 
 paused = False
 
 use_random_colors = False
-particles_radius = 0.02
+particles_radius = 0.01
 
-material_colors = [(0.1, 0.6, 0.9), (0.93, 0.33, 0.23), (1.0, 1.0, 1.0)]
+material_colors = [(0.1, 0.6, 0.9), (0.93, 0.33, 0.23), (1.0, 1.0, 1.0), (0.2, 0.6, 0.2)]
 
 
 def init():
@@ -359,6 +400,7 @@ while window.running:
 
     if not paused:
         for s in range(steps):
+            # bound = np.random.randint(2, high = 20)
             substep(g_x, g_y, g_z)
 
     render()
