@@ -1,5 +1,6 @@
 import numpy as np
-
+import random
+import math
 import taichi as ti
 
 arch = ti.vulkan if ti._lib.core.with_vulkan() else ti.cuda
@@ -7,7 +8,7 @@ ti.init(arch=arch)
 
 # dim, n_grid, steps, dt = 2, 128, 20, 2e-4
 #dim, n_grid, steps, dt = 2, 256, 32, 1e-4
-dim, n_grid, steps, dt = 3, 64, 5, 4e-4
+dim, n_grid, steps, dt = 3, 64, 25, 4e-4
 # dim, n_grid, steps, dt = 3, 64, 25, 2e-4
 #dim, n_grid, steps, dt = 3, 128, 5, 1e-4
 
@@ -23,7 +24,8 @@ p_mass = p_vol * p_rho
 g_x = 0
 g_y = -9.8
 g_z = 0
-bound = 1
+bound = 5
+wind_strength = 10
 # @ti.func
 # def bound (xg_x: float) -> int:
 #     x = ti.cast(xg_x, int)
@@ -67,9 +69,9 @@ def substep(g_x: float, g_y: float, g_z: float):
     for p in x:
         if used[p] == 0 :
             continue
-        Xp = x[p] / dx
-        base = int(Xp - 0.5)
-        fx = Xp - base
+        Xp = x[p] / dx # divide by step size
+        base = int(Xp - 0.5) 
+        fx = Xp - base 
         w = [0.5 * (1.5 - fx)**2, 0.75 - (fx - 1)**2, 0.5 * (fx - 0.5)**2]
 
         F[p] = (ti.Matrix.identity(float, 3) +
@@ -79,6 +81,8 @@ def substep(g_x: float, g_y: float, g_z: float):
             10 *
             (1.0 -
              Jp[p]))  # Hardening coefficient: snow gets harder when compressed
+        if materials[p] == SOIL:  # jelly, make it softer
+            h = 0.9
         if materials[p] == JELLY:  # jelly, make it softer
             h = 0.3
         mu, la = mu_0 * h, lambda_0 * h
@@ -115,14 +119,16 @@ def substep(g_x: float, g_y: float, g_z: float):
                 weight *= w[offset[i]][i]
             grid_v[base + offset] += weight * (p_mass * v[p] + affine @ dpos)
             grid_m[base + offset] += weight * p_mass
+
     for I in ti.grouped(grid_m):
         if grid_m[I] > 0:
             grid_v[I] /= grid_m[I]
         grid_v[I] += dt * ti.Vector([g_x, g_y, g_z])
         
-        cond = (I < bound) & (grid_v[I] < 0) | \
-               (I > n_grid - bound) & (grid_v[I] > 0)
+        original_speed = grid_v[I]
+        cond = (I < bound) & (grid_v[I] < 0) | (I > n_grid - bound) & (grid_v[I] > 0)
         grid_v[I] = 0 if cond else grid_v[I]
+
     ti.block_dim(n_grid)
 
     # position update
@@ -221,22 +227,58 @@ def set_color_by_material(material_colors: ti.types.ndarray()):
 
 print("Loading presets...this might take a minute")
 
+MAX_SLOPE = 45
+MIN_SLOPE = -45
+MIN_HEIGHT = 0
+
+def dist_squared(P1,P2):
+    return (P1[0]-P2[0])**2 + (P1[1]-P2[1])**2
+
+def mountain(P1,P2, result):
+    if dist_squared(P1,P2) < 0.03:
+        result.append(P2)
+        return
+    x1,y1 = P1
+    x2,y2 = P2
+    x3 = random.uniform(x1,x2)
+    y3_max = min((x3-x1)*math.tan(math.radians(MAX_SLOPE)) + y1, (x2-x3)*math.tan(-math.radians(MIN_SLOPE)) + y2)
+    y3_min = max((x3-x1)*math.tan(math.radians(MIN_SLOPE)) + y1, (x2-x3)*math.tan(-math.radians(MAX_SLOPE)) + y2)
+    y3_min = max(y3_min, MIN_HEIGHT)
+    y3 = random.uniform(y3_min,y3_max)
+    P3 = (x3, y3)
+    mountain(P1,P3, result)
+    mountain(P3,P2, result)
+    return
+
+heights = []
+mountain((0, 0), (1, 0.4), heights)
+print(heights)
+
 terrain = []
-for xx in np.linspace(0, 0.9, num = 10):
-    for yy in np.linspace(0, 0.9, num = 10):
-        z = np.random.choice(np.linspace(0, 0.5, num = 10), size = 1)[0]
-        single_terrian = CubeVolume(ti.Vector([xx, 0, yy]),
-                          ti.Vector([0.1, z, 0.1]), SOIL)
+for i in range(len(heights) - 1):
+    # for yy in np.linspace(0, 0.9, num = 10):
+        # z = np.random.choice(np.linspace(0, 0.5, num = 10), size = 1)[0]
+        xx = heights[i][0]
+        zz = heights[i][1]
+        single_terrian = CubeVolume(ti.Vector([xx, 0, 0]),
+                          ti.Vector([heights[i + 1][0] - xx, zz, 1]), SOIL)
         terrain.append(single_terrian)
 
-snowfall = [
-               CubeVolume(ti.Vector([0.01, 0.8, 0.01]),
-                          ti.Vector([0.99, 0.2, 0.99]), SNOW),
+snowfall1 = [
+               CubeVolume(ti.Vector([0.05, 0.8, 0.05]),
+                          ti.Vector([0.95, 0.2, 0.95]), SNOW),
             ]
 
-snowfall.extend(terrain)
+snowfall2 = [
+               CubeVolume(ti.Vector([0.05, 0.6, 0.05]),
+                          ti.Vector([0.3, 0.2, 0.3]), SNOW),
+            ]
 
-presets = [ snowfall,
+snowfall1.extend(terrain)
+snowfall2.extend(terrain)
+
+presets = [ snowfall1,
+            snowfall2,
            [
                CubeVolume(ti.Vector([0.05, 0.05, 0.05]),
                           ti.Vector([0.3, 0.4, 0.3]), WATER),
@@ -259,6 +301,7 @@ presets = [ snowfall,
 ]]
 preset_names = [
     "Snow Falling Mountain",
+    "Snow Falling Mountain2",
     "Double Dam Break",
     "Water Snow Jelly",
     "snow",
@@ -299,6 +342,7 @@ def show_options():
     global particles_radius
     global curr_preset_id
     global g_x, g_y, g_z
+    global wind_strength
 
     window.GUI.begin("Presets", 0.05, 0.1, 0.2, 0.15)
     old_preset = curr_preset_id
@@ -310,10 +354,9 @@ def show_options():
         paused = True
     window.GUI.end()
 
-    window.GUI.begin("Gravity", 0.05, 0.3, 0.2, 0.1)
-    g_x = window.GUI.slider_float("x", g_x, -10, 10)
-    g_y = window.GUI.slider_float("y", g_y, -10, 10)
-    g_z = window.GUI.slider_float("z", g_z, -10, 10)
+    window.GUI.begin("Wind and Gravity", 0.05, 0.3, 0.2, 0.1)
+    wind_strength = window.GUI.slider_float("Wind Strength", wind_strength, 0, 20)
+    g_z = window.GUI.slider_float("Gravity Constant", g_z, -10, 10)
     window.GUI.end()
 
     window.GUI.begin("Options", 0.05, 0.45, 0.2, 0.4)
@@ -357,17 +400,19 @@ def render():
 
 
 while window.running:
-    #print("heyyy ",frame_id)
     frame_id += 1
     frame_id = frame_id % 256
-
+    # wind simulation
+    prob = [True] + [False] * 10
+    if np.random.choice(prob):
+        g_x = random.randint(-round(wind_strength), round(wind_strength))
     if not paused:
         for s in range(steps):
             # bound = np.random.randint(2, high = 20)
             substep(g_x, g_y, g_z)
+    
+    mouse_pos = window.get_cursor_pos()
 
     render()
-
     show_options()
-
     window.show()
