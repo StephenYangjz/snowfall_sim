@@ -2,13 +2,14 @@ import numpy as np
 import random
 import math
 import taichi as ti
+from scipy.stats import multivariate_normal
 
 arch = ti.vulkan if ti._lib.core.with_vulkan() else ti.cuda
 ti.init(arch=arch)
 
 # dim, n_grid, steps, dt = 2, 128, 20, 2e-4
 #dim, n_grid, steps, dt = 2, 256, 32, 1e-4
-dim, n_grid, steps, dt = 3, 64, 25, 4e-4
+dim, n_grid, steps, dt, init_v_x, init_v_y, init_v_z = 3, 64, 20, 4e-4, 0, 0, 0
 # dim, n_grid, steps, dt = 3, 64, 25, 2e-4
 #dim, n_grid, steps, dt = 3, 128, 5, 1e-4
 
@@ -24,8 +25,9 @@ p_mass = p_vol * p_rho
 g_x = 0
 g_y = -9.8
 g_z = 0
-bound = 5
+bound = 3
 wind_strength = 10
+
 # @ti.func
 # def bound (xg_x: float) -> int:
 #     x = ti.cast(xg_x, int)
@@ -81,8 +83,8 @@ def substep(g_x: float, g_y: float, g_z: float):
             10 *
             (1.0 -
              Jp[p]))  # Hardening coefficient: snow gets harder when compressed
-        if materials[p] == SOIL:  # jelly, make it softer
-            h = 0.9
+        if materials[p] == SOIL:  # soil, hard
+            h = 1
         if materials[p] == JELLY:  # jelly, make it softer
             h = 0.3
         mu, la = mu_0 * h, lambda_0 * h
@@ -173,7 +175,7 @@ def init_cube_vol(first_par: int, last_par: int, x_begin: float,
             [x_size, y_size, z_size]) + ti.Vector([x_begin, y_begin, z_begin])
         Jp[i] = 1
         F[i] = ti.Matrix([[1, 0, 0], [0, 1, 0], [0, 0, 1]])
-        v[i] = ti.Vector([0.0, 0.0, 0.0])
+        v[i] = ti.Vector([init_v_x, init_v_y, init_v_z])
         materials[i] = material
         colors_random[i] = ti.Vector(
             [ti.random(), ti.random(),
@@ -229,7 +231,7 @@ print("Loading presets...this might take a minute")
 
 MAX_SLOPE = 45
 MIN_SLOPE = -45
-MIN_HEIGHT = 0
+MIN_HEIGHT = 0.1
 
 def dist_squared(P1,P2):
     return (P1[0]-P2[0])**2 + (P1[1]-P2[1])**2
@@ -251,10 +253,64 @@ def mountain(P1,P2, result):
     return
 
 heights = []
-mountain((0, 0), (1, 0.4), heights)
-print(heights)
+mountain((0, 0.1), (1, 0.4), heights)
+# print(heights)
+
+# Gausian 
+
+Gausian_x, Gausian_y = np.mgrid[0.0:0.95:20j, 0.0:0.95:20j]
+Gausian_xx = Gausian_x[:,0]
+Gausian_yy = Gausian_y[0,:]
+Gausian_xy = np.column_stack([Gausian_x.flat, Gausian_y.flat])
+mu1 = np.array([0.25, 0.25])
+sigma1 = np.array([.05, .05])
+covariance1 = np.diag(sigma1**1)
+mu2 = np.array([0.75, 0.75])
+sigma2 = np.array([.05, .05])
+covariance2 = np.diag(sigma2**1)
+z1 = multivariate_normal.pdf(Gausian_xy, mean=mu1, cov=covariance1) / 6
+z2 = multivariate_normal.pdf(Gausian_xy, mean=mu2, cov=covariance2) / 8
+Gausian_z = z1 + z2
+Gausian_z = Gausian_z.reshape(Gausian_x.shape)
+
+Gausian_terrain = []
+# Gaussian Mountain Generation
+for i in range(len(Gausian_xx)):
+    for j in range(len(Gausian_yy)):
+        zz = Gausian_z[i][j] + 0.1
+        single_terrian = CubeVolume(ti.Vector([Gausian_xx[i], 0, Gausian_yy[j]]),
+                            ti.Vector([0.05, zz, 0.05]), SOIL)
+        Gausian_terrain.append(single_terrian)
+
+Gausian_x, Gausian_y = np.mgrid[0.0:0.975:40j, 0.0:0.975:40j]
+Gausian_xx = Gausian_x[:,0]
+Gausian_yy = Gausian_y[0,:]
+Gausian_xy = np.column_stack([Gausian_x.flat, Gausian_y.flat])
+Gausian_mu = np.array([0.5, 0.5])
+Gausian_sigma = np.array([.1, .1])
+Gausian_covariance = np.diag(Gausian_sigma**1)
+Gausian_z = multivariate_normal.pdf(Gausian_xy, mean=Gausian_mu, cov=Gausian_covariance) / 2
+Gausian_z = Gausian_z.reshape(Gausian_x.shape)
+# Gaussian Mountain Generation
+Gausian_terrain_single = []
+for i in range(len(Gausian_xx)):
+    for j in range(len(Gausian_yy)):
+        zz = Gausian_z[i][j] - 0.5
+        if zz > 0.2:
+            single_terrian = CubeVolume(ti.Vector([Gausian_xx[i], 0.1, Gausian_yy[j]]),
+                                ti.Vector([0.05, zz, 0.05]), SNOW)
+            Gausian_terrain_single.append(single_terrian)
+        # else:
+        #     zz = 0.1
+        #     single_terrian = CubeVolume(ti.Vector([Gausian_xx[i], 0, Gausian_yy[j]]),
+        #                         ti.Vector([0.05, zz, 0.05]), WATER)
+        #     Gausian_terrain_single.append(single_terrian)
+
+Gausian_terrain_single.append(CubeVolume(ti.Vector([0.6, 0.05, 0.6]),
+                          ti.Vector([0.25, 0.25, 0.25]), WATER),)
 
 terrain = []
+
 for i in range(len(heights) - 1):
     # for yy in np.linspace(0, 0.9, num = 10):
         # z = np.random.choice(np.linspace(0, 0.5, num = 10), size = 1)[0]
@@ -265,20 +321,33 @@ for i in range(len(heights) - 1):
         terrain.append(single_terrian)
 
 snowfall1 = [
-               CubeVolume(ti.Vector([0.05, 0.8, 0.05]),
-                          ti.Vector([0.95, 0.2, 0.95]), SNOW),
+               CubeVolume(ti.Vector([0.05, 0.95, 0.05]),
+                          ti.Vector([0.95, 0.1, 0.95]), SNOW),
             ]
 
 snowfall2 = [
-               CubeVolume(ti.Vector([0.05, 0.6, 0.05]),
-                          ti.Vector([0.3, 0.2, 0.3]), SNOW),
+               CubeVolume(ti.Vector([0.2, 0.6, 0.2]),
+                          ti.Vector([0.6, 0.1, 0.6]), SNOW),
             ]
 
-snowfall1.extend(terrain)
+snowfall_init_speed = [
+               CubeVolume(ti.Vector([0.2, 0.6, 0.2]),
+                          ti.Vector([0.6, 0.1, 0.6]), SNOW, ),
+            ]
+
+snow_melting = [
+               CubeVolume(ti.Vector([0.2, 0.6, 0.2]),
+                          ti.Vector([0.6, 0.1, 0.6]), SNOW, ),
+            ]
+
+snowfall1.extend(Gausian_terrain)
 snowfall2.extend(terrain)
+snowfall_init_speed.extend(Gausian_terrain)
 
 presets = [ snowfall1,
             snowfall2,
+            Gausian_terrain_single,
+            snowfall_init_speed,
            [
                CubeVolume(ti.Vector([0.05, 0.05, 0.05]),
                           ti.Vector([0.3, 0.4, 0.3]), WATER),
@@ -301,7 +370,9 @@ presets = [ snowfall1,
 ]]
 preset_names = [
     "Snow Falling Mountain",
-    "Snow Falling Mountain2",
+    "Snow Sheet Failing",
+    "Snow Meling In Water",
+    "Gaussian Mountain, Initial Velocity",
     "Double Dam Break",
     "Water Snow Jelly",
     "snow",
@@ -314,12 +385,18 @@ paused = False
 use_random_colors = False
 particles_radius = 0.01
 
+use_random_wind = False
+
 material_colors = [(0.1, 0.6, 0.9), (0.93, 0.33, 0.23), (1.0, 1.0, 1.0), (0.2, 0.6, 0.2)]
 
 
 def init():
     global paused
-    init_vols(presets[curr_preset_id])
+    if curr_preset_id == 3:
+        init_v_x, init_v_y, init_v_z = 5, 0, 0
+        init_vols(presets[curr_preset_id])
+    else:
+        init_vols(presets[curr_preset_id])
 
 
 init()
@@ -343,8 +420,9 @@ def show_options():
     global curr_preset_id
     global g_x, g_y, g_z
     global wind_strength
+    global use_random_wind
 
-    window.GUI.begin("Presets", 0.05, 0.1, 0.2, 0.15)
+    window.GUI.begin("Presets", 0.05, 0.1, 0.2, 0.25)
     old_preset = curr_preset_id
     for i in range(len(presets)):
         if window.GUI.checkbox(preset_names[i], curr_preset_id == i):
@@ -354,25 +432,13 @@ def show_options():
         paused = True
     window.GUI.end()
 
-    window.GUI.begin("Wind and Gravity", 0.05, 0.3, 0.2, 0.1)
+    window.GUI.begin("Wind and Gravity", 0.05, 0.3, 0.2, 0.2)
     wind_strength = window.GUI.slider_float("Wind Strength", wind_strength, 0, 20)
-    g_z = window.GUI.slider_float("Gravity Constant", g_z, -10, 10)
-    window.GUI.end()
-
-    window.GUI.begin("Options", 0.05, 0.45, 0.2, 0.4)
-
-    use_random_colors = window.GUI.checkbox("use_random_colors",
-                                            use_random_colors)
-    if not use_random_colors:
-        material_colors[WATER] = window.GUI.color_edit_3(
-            "water color", material_colors[WATER])
-        material_colors[SNOW] = window.GUI.color_edit_3(
-            "snow color", material_colors[SNOW])
-        material_colors[JELLY] = window.GUI.color_edit_3(
-            "jelly color", material_colors[JELLY])
-        set_color_by_material(np.array(material_colors, dtype=np.float32))
-    particles_radius = window.GUI.slider_float("particles radius ",
+    g_y = window.GUI.slider_float("Gravity Constant", g_y, -10, 10)
+    particles_radius = window.GUI.slider_float("Particles Radius ",
                                                particles_radius, 0, 0.1)
+    use_random_wind = window.GUI.checkbox("Use Random Wind",
+                                            use_random_wind)
     if window.GUI.button("restart"):
         init()
     if paused:
@@ -381,6 +447,8 @@ def show_options():
     else:
         if window.GUI.button("Pause"):
             paused = True
+    set_color_by_material(np.array(material_colors, dtype=np.float32))
+    
     window.GUI.end()
 
 
@@ -393,8 +461,11 @@ def render():
     colors_used = colors_random if use_random_colors else colors
     scene.particles(x, per_vertex_color=colors_used, radius=particles_radius)
 
-    scene.point_light(pos=(0.5, 1.5, 0.5), color=(0.5, 0.5, 0.5))
-    scene.point_light(pos=(0.5, 1.5, 1.5), color=(0.5, 0.5, 0.5))
+    scene.point_light(pos=(0.5, 0.8, -0.5), color=(0.8, 0.5, 0.0))
+    scene.point_light(pos=(-0.5, 0.5, 0.5), color=(0.5, 0.5, 0.5))
+    scene.point_light(pos=(1.5, 0.5, 0.5), color=(0.5, 0.5, 0.5))
+    scene.point_light(pos=(0.5, 0.8, 1.5), color=(0.5, 0.5, 0.5))
+    # scene.point_light(pos=(0.5, 1.5, 1.5), color=(0.5, 0.5, 0.99))
 
     canvas.scene(scene)
 
@@ -404,15 +475,22 @@ while window.running:
     frame_id = frame_id % 256
     # wind simulation
     prob = [True] + [False] * 10
-    if np.random.choice(prob):
-        g_x = random.randint(-round(wind_strength), round(wind_strength))
+    # if np.random.choice(prob):
+    #     g_x = random.randint(-round(wind_strength), round(wind_strength))
     if not paused:
         for s in range(steps):
             # bound = np.random.randint(2, high = 20)
             substep(g_x, g_y, g_z)
     
-    mouse_pos = window.get_cursor_pos()
-
+    
+    if use_random_wind:
+        if np.random.choice(prob):
+            g_x += random.randint(-round(wind_strength), round(wind_strength))
+            g_x = max(g_x, -round(wind_strength))
+            g_x = min(g_x, round(wind_strength))
+    else:
+        mouse_pos = window.get_cursor_pos()
+        g_x = (0.5 - mouse_pos[0]) * wind_strength
     render()
     show_options()
     window.show()
