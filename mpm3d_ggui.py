@@ -7,7 +7,7 @@ ti.init(arch=arch)
 
 # dim, n_grid, steps, dt = 2, 128, 20, 2e-4
 #dim, n_grid, steps, dt = 2, 256, 32, 1e-4
-dim, n_grid, steps, dt = 3, 64, 5, 4e-4
+dim, n_grid, steps, dt = 3, 64, 25, 4e-4
 # dim, n_grid, steps, dt = 3, 64, 25, 2e-4
 #dim, n_grid, steps, dt = 3, 128, 5, 1e-4
 
@@ -52,7 +52,7 @@ used = ti.field(int, n_particles)
 
 
 neighbour = (3, ) * dim
-neighbour1 = (4, ) * dim
+grid_offsets = (4, ) * dim
 
 
 WATER = 0
@@ -74,22 +74,22 @@ def substep(g_x: float, g_y: float, g_z: float):
             baseX = int(Xp[0]) 
             baseY = int(Xp[1])
             baseZ = int(Xp[2])
-            diffX = Xp[0] - baseX
-            diffY = Xp[1] - baseY
-            diffZ = Xp[2] - baseZ
+            #diffX = Xp[0] - baseX
+            #diffY = Xp[1] - baseY
+            #diffZ = Xp[2] - baseZ
             #checks grid points up to 2 grid points away since N will be 0 where the distance between the points position and grid points is over 2
-            for offset in ti.static(ti.grouped(ti.ndrange(*neighbour1))):
+            for offset in ti.static(ti.grouped(ti.ndrange(*grid_offsets))):
                 #don't try to access negative grid indices
-                if (baseX + offset[0] - 1 < 0):
-                    continue
-                if (baseY + offset[1] - 1 < 0):
-                    continue 
-                if (baseZ + offset[2] - 1 < 0):
-                    continue
+                #if (baseX + offset[0] - 1 < 0):
+                #    continue
+                #if (baseY + offset[1] - 1 < 0):
+                #    continue 
+                #if (baseZ + offset[2] - 1 < 0):
+                #    continue
                 #distance between particle position and grid position
-                diffX = baseX - (baseX + offset[0] - 1)
-                diffY = baseY - (baseY + offset[1] - 1)
-                diffZ = baseZ - (baseZ + offset[2] - 1)
+                diffX = Xp[0] - (baseX + offset[0] - 1)
+                diffY = Xp[1] - (baseY + offset[1] - 1)
+                diffZ = Xp[2] - (baseZ + offset[2] - 1)
                 abs_diffX = abs(diffX)
                 abs_diffY = abs(diffY)
                 abs_diffZ = abs(diffZ)
@@ -107,10 +107,52 @@ def substep(g_x: float, g_y: float, g_z: float):
                     else:
                         weight *= w12[i]
                 grid_m[baseX + offset[0] - 1, baseY + offset[1] - 1, baseZ + offset[2] - 1] += weight * p_mass
-                grid_v[baseX + offset[0] - 1, baseY + offset[1] - 1, baseZ + offset[2] - 1] += weight * (p_mass * v[p]) / grid_m[baseX + offset[0] - 1, baseY + offset[1] - 1, baseZ + offset[2] - 1]
+                grid_v[baseX + offset[0] - 1, baseY + offset[1] - 1, baseZ + offset[2] - 1] += weight * p_mass * v[p] #/ grid_m[baseX + offset[0] - 1, baseY + offset[1] - 1, baseZ + offset[2] - 1]
+            #MPM step 3
+            for offset in ti.static(ti.grouped(ti.ndrange(*grid_offsets))):
+                #don't try to access negative grid indices
+                if (baseX + offset[0] - 1 < 0):
+                    continue
+                if (baseY + offset[1] - 1 < 0):
+                    continue 
+                if (baseZ + offset[2] - 1 < 0):
+                    continue
+                #distance between particle position and grid position
+                diffX = baseX - (baseX + offset[0] - 1)
+                diffY = baseY - (baseY + offset[1] - 1)
+                diffZ = baseZ - (baseZ + offset[2] - 1)
+                abs_diffX = abs(diffX)
+                abs_diffY = abs(diffY)
+                abs_diffZ = abs(diffZ)
+                diffX_sign = sign(diffX)
+                diffY_sign = sign(diffY)
+                diffZ_sign = sign(diffZ)
 
-                #MPM step 3
-                
+
+                distances = ti.Vector([abs_diffX, abs_diffY, abs_diffZ])
+
+                weight = 1.0
+                #equation to be used if distance between particle is < 1, w01[0] is the calcuation for the x position, w01[1] is calculation for the y position, etc
+                w01 = [0.5 * (abs_diffX)**3 - diffX**2 + 2.0 / 3.0,0.5 * (abs_diffY)**3 - diffY**2 + 2.0 / 3.0, 0.5 * (abs_diffZ)**3 - diffZ**2 + 2.0 / 3.0]
+                #equation to be used if distance between particle is > 1, w12[0] is the calcuation for the x position, w12[1] is calculation for the y position, etc (implicit less than 2 from offsets used)
+                w12 = [-1.0/6.0 * (abs_diffX)**3 + diffX**2 - 2 * abs_diffX + 4.0 / 3.0, -1.0/6.0 * (abs_diffY)**3 + diffY**2 - 2 * abs_diffY + 4.0 / 3.0, -1.0/6.0 * (abs_diffZ)**3 + diffZ**2 - 2 * abs_diffZ + 4.0 / 3.0]
+                #derivative of w01
+                w01dx = [1.5 * diffX ** 2 * diffX_sign - 2 * diffX, 1.5 * diffY **2 * diffY_sign - 2 * diffY, 1.5 * diffZ **2 * diffZ_sign - 2 * diffZ]
+                #derivative of w12
+                w12dx = [-0.5 * diffX ** 2 * diffX_sign + 2 * diffX - 2 * diffX_sign, -0.5 * diffY ** 2 * diffY_sign + 2 * diffY - 2 * diffY_sign, -0.5 * diffZ ** 2 * diffZ_sign + 2 * diffZ - 2 * diffZ_sign]
+
+
+
+
+                #for i in ti.static(range(dim)):
+                #    if distances[i] < 1:
+                #        weight *= w01[i]
+                #    else:
+                #        weight *= w12[i]
+                #grid_m[baseX + offset[0] - 1, baseY + offset[1] - 1, baseZ + offset[2] - 1] += weight * p_mass
+                #grid_v[baseX + offset[0] - 1, baseY + offset[1] - 1, baseZ + offset[2] - 1] += weight * (p_mass * v[p]) / grid_m[baseX + offset[0] - 1, baseY + offset[1] - 1, baseZ + offset[2] - 1]
+            #MPM step 4
+
         else:
             if used[p] == 0:
                 continue
@@ -166,27 +208,61 @@ def substep(g_x: float, g_y: float, g_z: float):
         grid_v[I] = 0 if cond else grid_v[I]
     ti.block_dim(n_grid)
     for p in x:
-        if materials[p] == SOIL:
-            continue
-        if used[p] == 0:
-            continue
-        Xp = x[p] / dx
-        base = int(Xp - 0.5)
-        fx = Xp - base
-        w = [0.5 * (1.5 - fx)**2, 0.75 - (fx - 1)**2, 0.5 * (fx - 0.5)**2]
-        new_v = ti.zero(v[p])
-        new_C = ti.zero(C[p])
-        for offset in ti.static(ti.grouped(ti.ndrange(*neighbour))):
-            dpos = (offset - fx) * dx
-            weight = 1.0
-            for i in ti.static(range(dim)):
-                weight *= w[offset[i]][i]
-            g_v = grid_v[base + offset]
-            new_v += weight * g_v
-            new_C += 4 * weight * g_v.outer_product(dpos) / dx**2
-        v[p] = new_v
-        x[p] += dt * v[p]
-        C[p] = new_C
+        if materials[p] == SNOW:
+            Xp = x[p] / dx #scaling particles position to match grid space?
+            baseX = int(Xp[0]) 
+            baseY = int(Xp[1])
+            baseZ = int(Xp[2])
+            new_v = ti.zero(v[p])
+            new_C = ti.zero(C[p])
+            for offset in ti.static(ti.grouped(ti.ndrange(*grid_offsets))):
+
+                #distance between particle position and grid position
+                diffX = Xp[0] - (baseX + offset[0] - 1)
+                diffY = Xp[1] - (baseY + offset[1] - 1)
+                diffZ = Xp[2] - (baseZ + offset[2] - 1)
+                abs_diffX = abs(diffX)
+                abs_diffY = abs(diffY)
+                abs_diffZ = abs(diffZ)
+
+                distances = ti.Vector([abs_diffX, abs_diffY, abs_diffZ])
+
+                weight = 1.0
+                #equation to be used if distance between particle is < 1, w01[0] is the calcuation for the x position, w01[1] is calculation for the y position, etc
+                w01 = [0.5 * (abs_diffX)**3 - diffX**2 + 2.0 / 3.0,0.5 * (abs_diffY)**3 - diffY**2 + 2.0 / 3.0, 0.5 * (abs_diffZ)**3 - diffZ**2 + 2.0 / 3.0]
+                #equation to be used if distance between particle is > 1, w12[0] is the calcuation for the x position, w12[1] is calculation for the y position, etc (implicit less than 2 from offsets used)
+                w12 = [-1.0/6.0 * (abs_diffX)**3 + diffX**2 - 2 * abs_diffX + 4.0 / 3.0, -1.0/6.0 * (abs_diffY)**3 + diffY**2 - 2 * abs_diffY + 4.0 / 3.0, -1.0/6.0 * (abs_diffZ)**3 + diffZ**2 - 2 * abs_diffZ + 4.0 / 3.0]
+                for i in ti.static(range(dim)):
+                    if distances[i] < 1:
+                        weight *= w01[i]
+                    else:
+                        weight *= w12[i]
+                g_v = grid_v[baseX + offset[0] - 1, baseY + offset[1] - 1, baseZ + offset[2] - 1]
+                new_v += weight * g_v
+            v[p] = new_v
+            x[p] += dt * v[p]
+        else:
+            if materials[p] == SOIL:
+                continue
+            if used[p] == 0:
+                continue
+            Xp = x[p] / dx
+            base = int(Xp - 0.5)
+            fx = Xp - base
+            w = [0.5 * (1.5 - fx)**2, 0.75 - (fx - 1)**2, 0.5 * (fx - 0.5)**2]
+            new_v = ti.zero(v[p])
+            new_C = ti.zero(C[p])
+            for offset in ti.static(ti.grouped(ti.ndrange(*neighbour))):
+                dpos = (offset - fx) * dx
+                weight = 1.0
+                for i in ti.static(range(dim)):
+                    weight *= w[offset[i]][i]
+                g_v = grid_v[base + offset]
+                new_v += weight * g_v
+                new_C += 4 * weight * g_v.outer_product(dpos) / dx**2
+            v[p] = new_v
+            x[p] += dt * v[p]
+            C[p] = new_C
 
 
 class CubeVolume:
@@ -207,7 +283,7 @@ def init_cube_vol(first_par: int, last_par: int, x_begin: float,
         Jp[i] = 1
         F[i] = ti.Matrix([[1, 0, 0], [0, 1, 0], [0, 0, 1]])
         #v[i] represents the velocity of particle i
-        v[i] = ti.Vector([0.0, 0.0, 0.0])
+        v[i] = ti.Vector([3.0, 0.0, 0.0])
         materials[i] = material
         colors_random[i] = ti.Vector(
             [ti.random(), ti.random(),
