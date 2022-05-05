@@ -44,7 +44,7 @@ class Game:
         pygame.init()
         pygame.display.set_caption(self.caption)
         self.screen = pygame.display.set_mode((self.width, self.height))        
-        self.font = pygame.font.Font("fonts/visitor1.ttf", 20)
+        self.font = pygame.font.SysFont('arial', 20)
 
     def loop(self):
         self.clock = pygame.time.Clock()
