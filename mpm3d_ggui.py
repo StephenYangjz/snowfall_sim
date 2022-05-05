@@ -30,23 +30,30 @@ bound = 3
 #     terrian = {0:0, 1:1, 2:2, 3:3, 4:4, 5:5, 6:6, 7:7, 8:8, 9:9, 10:10, 11:11, 12:12, 13:13, 14:14, 15:15, 16:16}
 #     return terrian[x]
 
+alpha = 0.95
 E = 1000  # Young's modulus
 nu = 0.2  #  Poisson's ratio
 mu_0, lambda_0 = E / (2 * (1 + nu)), E * nu / (
     (1 + nu) * (1 - 2 * nu))  # Lame parameters
+xi = 10 #snow's hardening coeficient
 
 x = ti.Vector.field(dim, float, n_particles)
 v = ti.Vector.field(dim, float, n_particles)
 C = ti.Matrix.field(dim, dim, float, n_particles)
 F = ti.Matrix.field(3, 3, dtype=float,
                     shape=n_particles)  # deformation gradient
+F_E = ti.Matrix.field(3, 3, dtype=float, shape=n_particles) #deformation gradient for E
+F_P = ti.Matrix.field(3, 3, dtype=float, shape=n_particles)
+F_hat_ep = ti.Matrix.field(3, 3, dtype=float, shape=n_particles)
 Jp = ti.field(float, n_particles)
 
 colors = ti.Vector.field(4, float, n_particles)
 colors_random = ti.Vector.field(4, float, n_particles)
 materials = ti.field(int, n_particles)
 grid_v = ti.Vector.field(dim, float, (n_grid, ) * dim)
+grid_v_old = ti.Vector.field(dim, float, (n_grid, ) * dim)
 grid_m = ti.field(float, (n_grid, ) * dim)
+grid_f = ti.Vector.field(dim, float, (n_grid, ) * dim)
 used = ti.field(int, n_particles)
 
 
@@ -60,9 +67,110 @@ JELLY = 1
 SNOW = 2
 SOIL = 3
 
+@ti.func 
+def lame_mu(mu_0, xi, J_p):
+    return mu_0 * ti.exp(xi*(1-J_p))
+
+@ti.func 
+def lame_lambda(lambda_0, xi, J_p):
+    return lambda_0 * ti.exp(xi*(1-J_p))
+
+
+@ti.func 
+def psi_derivative(mu_0, lambda_0, xi, p):
+    J_p = F_P[p].determinant()
+    J_e = F_hat_ep[p].determinant()
+    RE, _ = ti.polar_decompose(F_hat_ep[p])
+    return 2 * lame_mu(mu_0, xi, J_p) * (F_hat_ep[p]-RE) + lame_lambda(lambda_0, xi, J_p) * (J_e-1) * J_e * F_hat_ep[p].transpose().inverse()
+
+
+@ti.func
+def compute_weight(Xp, offset, baseX, baseY, baseZ):
+    diffX = Xp[0] - (baseX + offset[0] - 1)
+    diffY = Xp[1] - (baseY + offset[1] - 1)
+    diffZ = Xp[2] - (baseZ + offset[2] - 1)
+    diff = ti.Vector([diffX, diffY, diffZ])
+
+    abs_diffX = abs(diffX)
+    abs_diffY = abs(diffY)
+    abs_diffZ = abs(diffZ)
+
+    distances = ti.Vector([abs_diffX, abs_diffY, abs_diffZ])
+
+    #equation to be used if distance between particle is < 1, w01[0] is the calcuation for the x position, w01[1] is calculation for the y position, etc
+    w01 = ti.Vector([0.5 * (abs_diffX)**3 - diffX**2 + 2.0 / 3.0,0.5 * (abs_diffY)**3 - diffY**2 + 2.0 / 3.0, 0.5 * (abs_diffZ)**3 - diffZ**2 + 2.0 / 3.0])
+    #equation to be used if distance between particle is > 1, w12[0] is the calcuation for the x position, w12[1] is calculation for the y position, etc (implicit less than 2 from offsets used)
+    w12 = ti.Vector([-1.0/6.0 * (abs_diffX)**3 + diffX**2 - 2 * abs_diffX + 4.0 / 3.0, -1.0/6.0 * (abs_diffY)**3 + diffY**2 - 2 * abs_diffY + 4.0 / 3.0, -1.0/6.0 * (abs_diffZ)**3 + diffZ**2 - 2 * abs_diffZ + 4.0 / 3.0])
+
+    weight = 1.0
+    for i in ti.static(range(dim)):
+        if distances[i] < 1:
+            weight *= w01[i]
+        else:
+            weight *= w12[i]
+    return weight, w01, w12, diff
+
+@ti.func
+def compute_weight_grad(w01, w12, diff):
+
+    (diffX, diffY, diffZ) = diff
+    abs_diffX = abs(diffX)
+    abs_diffY = abs(diffY)
+    abs_diffZ = abs(diffZ)
+
+    
+    diffX_sign = 1 if (diffX > 0) else -1
+    diffY_sign = 1 if (diffY > 0) else -1
+    diffZ_sign = 1 if (diffZ > 0) else -1
+
+
+    distances = ti.Vector([abs_diffX, abs_diffY, abs_diffZ])
+    #derivative of w01
+    w01d = [1.5 * diffX ** 2 * diffX_sign - 2 * diffX, 1.5 * diffY **2 * diffY_sign - 2 * diffY, 1.5 * diffZ **2 * diffZ_sign - 2 * diffZ]
+    #derivative of w12
+    w12d = [-0.5 * diffX ** 2 * diffX_sign + 2 * diffX - 2 * diffX_sign, -0.5 * diffY ** 2 * diffY_sign + 2 * diffY - 2 * diffY_sign, -0.5 * diffZ ** 2 * diffZ_sign + 2 * diffZ - 2 * diffZ_sign]
+
+    #gradient of w in the case distance is >=0 <1
+    x_w = None
+    x_wdx = None
+
+    y_w = None
+    y_wdy = None
+
+    z_w = None
+    z_wdz = None
+    if distances[0] < 1:
+        x_w = w01[0]
+        x_wdx = w01d[0]
+    else:
+        x_w = w12[0]
+        x_wdx = w12d[0]
+
+    if distances[1] < 1:
+        y_w = w01[1]
+        y_wdy = w01d[1]
+    else:
+        y_w = w12[1]
+        y_wdy = w12d[1]
+
+    if distances[2] < 1:
+        z_w = w01[2]
+        z_wdz = w01d[2]
+    else:
+        z_w = w12[2]
+        z_wdz = w12d[2]
+
+
+
+
+    w_gradient = ti.Vector([y_w * z_w * x_wdx, x_w * z_w * y_wdy, x_w * y_w * z_wdz])
+
+    return w_gradient
+
 @ti.kernel
 def substep(g_x: float, g_y: float, g_z: float):
-    for I in ti.grouped(grid_m): #sets all grid masses and velocities to 0
+    for I in ti.grouped(grid_m): #sets all grid masses and velocities to 0, v_old keeps old grid velocities
+        grid_v_old[I] = grid_v[I]
         grid_v[I] = ti.zero(grid_v[I])
         grid_m[I] = 0
     ti.block_dim(n_grid)
@@ -77,6 +185,7 @@ def substep(g_x: float, g_y: float, g_z: float):
             #diffX = Xp[0] - baseX
             #diffY = Xp[1] - baseY
             #diffZ = Xp[2] - baseZ
+            summation = ti.Matrix([[0,0,0], [0,0,0], [0,0,0]], ti.f32)
             #checks grid points up to 2 grid points away since N will be 0 where the distance between the points position and grid points is over 2
             for offset in ti.static(ti.grouped(ti.ndrange(*grid_offsets))):
                 #don't try to access negative grid indices
@@ -87,62 +196,37 @@ def substep(g_x: float, g_y: float, g_z: float):
                 #if (baseZ + offset[2] - 1 < 0):
                 #    continue
                 #distance between particle position and grid position
-                diffX = Xp[0] - (baseX + offset[0] - 1)
-                diffY = Xp[1] - (baseY + offset[1] - 1)
-                diffZ = Xp[2] - (baseZ + offset[2] - 1)
-                abs_diffX = abs(diffX)
-                abs_diffY = abs(diffY)
-                abs_diffZ = abs(diffZ)
+                weight, _, _, _ = compute_weight(Xp, offset, baseX, baseY, baseZ)
 
-                distances = ti.Vector([abs_diffX, abs_diffY, abs_diffZ])
-
-                weight = 1.0
-                #equation to be used if distance between particle is < 1, w01[0] is the calcuation for the x position, w01[1] is calculation for the y position, etc
-                w01 = [0.5 * (abs_diffX)**3 - diffX**2 + 2.0 / 3.0,0.5 * (abs_diffY)**3 - diffY**2 + 2.0 / 3.0, 0.5 * (abs_diffZ)**3 - diffZ**2 + 2.0 / 3.0]
-                #equation to be used if distance between particle is > 1, w12[0] is the calcuation for the x position, w12[1] is calculation for the y position, etc (implicit less than 2 from offsets used)
-                w12 = [-1.0/6.0 * (abs_diffX)**3 + diffX**2 - 2 * abs_diffX + 4.0 / 3.0, -1.0/6.0 * (abs_diffY)**3 + diffY**2 - 2 * abs_diffY + 4.0 / 3.0, -1.0/6.0 * (abs_diffZ)**3 + diffZ**2 - 2 * abs_diffZ + 4.0 / 3.0]
-                for i in ti.static(range(dim)):
-                    if distances[i] < 1:
-                        weight *= w01[i]
-                    else:
-                        weight *= w12[i]
                 grid_m[baseX + offset[0] - 1, baseY + offset[1] - 1, baseZ + offset[2] - 1] += weight * p_mass
                 grid_v[baseX + offset[0] - 1, baseY + offset[1] - 1, baseZ + offset[2] - 1] += weight * p_mass * v[p] #/ grid_m[baseX + offset[0] - 1, baseY + offset[1] - 1, baseZ + offset[2] - 1]
             #MPM step 3
             for offset in ti.static(ti.grouped(ti.ndrange(*grid_offsets))):
                 #don't try to access negative grid indices
-                if (baseX + offset[0] - 1 < 0):
-                    continue
-                if (baseY + offset[1] - 1 < 0):
-                    continue 
-                if (baseZ + offset[2] - 1 < 0):
-                    continue
-                #distance between particle position and grid position
-                diffX = baseX - (baseX + offset[0] - 1)
-                diffY = baseY - (baseY + offset[1] - 1)
-                diffZ = baseZ - (baseZ + offset[2] - 1)
-                abs_diffX = abs(diffX)
-                abs_diffY = abs(diffY)
-                abs_diffZ = abs(diffZ)
-                diffX_sign = sign(diffX)
-                diffY_sign = sign(diffY)
-                diffZ_sign = sign(diffZ)
+                
+                weight, w01, w12, diff = compute_weight(Xp, offset, baseX, baseY, baseZ)
 
+                
+                #gradient of w in the case distance is >=0 <1
+                w_gradient = compute_weight_grad(w01, w12, diff)
 
-                distances = ti.Vector([abs_diffX, abs_diffY, abs_diffZ])
+                velocity = grid_v[baseX + offset[0] - 1, baseY + offset[1] - 1, baseZ + offset[2] - 1]
+                summation += dt * velocity.outer_product(w_gradient)
+            identity = ti.Matrix([[1,0,0], [0,1,0], [0,0,1]], ti.f32)
+            F_hat_ep[p] = (identity + summation) * F_E[p]
 
-                weight = 1.0
-                #equation to be used if distance between particle is < 1, w01[0] is the calcuation for the x position, w01[1] is calculation for the y position, etc
-                w01 = [0.5 * (abs_diffX)**3 - diffX**2 + 2.0 / 3.0,0.5 * (abs_diffY)**3 - diffY**2 + 2.0 / 3.0, 0.5 * (abs_diffZ)**3 - diffZ**2 + 2.0 / 3.0]
-                #equation to be used if distance between particle is > 1, w12[0] is the calcuation for the x position, w12[1] is calculation for the y position, etc (implicit less than 2 from offsets used)
-                w12 = [-1.0/6.0 * (abs_diffX)**3 + diffX**2 - 2 * abs_diffX + 4.0 / 3.0, -1.0/6.0 * (abs_diffY)**3 + diffY**2 - 2 * abs_diffY + 4.0 / 3.0, -1.0/6.0 * (abs_diffZ)**3 + diffZ**2 - 2 * abs_diffZ + 4.0 / 3.0]
-                #derivative of w01
-                w01dx = [1.5 * diffX ** 2 * diffX_sign - 2 * diffX, 1.5 * diffY **2 * diffY_sign - 2 * diffY, 1.5 * diffZ **2 * diffZ_sign - 2 * diffZ]
-                #derivative of w12
-                w12dx = [-0.5 * diffX ** 2 * diffX_sign + 2 * diffX - 2 * diffX_sign, -0.5 * diffY ** 2 * diffY_sign + 2 * diffY - 2 * diffY_sign, -0.5 * diffZ ** 2 * diffZ_sign + 2 * diffZ - 2 * diffZ_sign]
+            sigma_p = psi_derivative(mu_0, lambda_0, xi, p) * F_E[p].transpose()
+            neg_force_unweighted = p_vol * sigma_p
+            for offset in ti.static(ti.grouped(ti.ndrange(*grid_offsets))):
+                #don't try to access negative grid indices
+                
+                weight, w01, w12, diff = compute_weight(Xp, offset, baseX, baseY, baseZ)
 
+                
+                #gradient of w in the case distance is >=0 <1
+                w_gradient = compute_weight_grad(w01, w12, diff)
 
-
+                grid_f[baseX + offset[0] - 1, baseY + offset[1] - 1, baseZ + offset[2] - 1] -= neg_force_unweighted @ w_gradient
 
                 #for i in ti.static(range(dim)):
                 #    if distances[i] < 1:
@@ -282,6 +366,7 @@ def init_cube_vol(first_par: int, last_par: int, x_begin: float,
         x[i] = ti.Vector([ti.random() for i in range(dim)]) * ti.Vector([x_size, y_size, z_size]) + ti.Vector([x_begin, y_begin, z_begin]) 
         Jp[i] = 1
         F[i] = ti.Matrix([[1, 0, 0], [0, 1, 0], [0, 0, 1]])
+        F_E[i] = ti.Matrix([[1, 0, 0], [0, 1, 0], [0, 0, 1]])
         #v[i] represents the velocity of particle i
         v[i] = ti.Vector([3.0, 0.0, 0.0])
         materials[i] = material
