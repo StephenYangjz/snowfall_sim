@@ -25,11 +25,12 @@ class Game:
         self.snowflakes = []
         self.snowflake_counter = 0
         self.snowflake_frequency = 5
-        self.snowflake_size = 1
+        self.snowflake_size = 3
         # self.snowflake_line = [ height - random.randint(200, 250) for i in range(width)] # for collision detection
-        self.snowflake_line = []
-        self.mountain((0, 400), (self.width, 450), self.snowflake_line)
-        self.snowflake_line = [int(ele[1]) for ele in self.snowflake_line[:800]]
+        self.mountain_line = []
+        self.mountain((0, 400), (self.width, 450), self.mountain_line)
+        self.mountain_line = [int(ele[1]) for ele in self.mountain_line[:800]]
+        self.snowflake_line = [e for e in self.mountain_line]
         # print(self.snowflake_line)
         # print(len(self.snowflake_line))
         self.wind_chance = 1
@@ -103,7 +104,7 @@ class Game:
         surface.convert()
         surface.fill(self.background_color)
         left_corner_x = 0
-        for vertex in self.snowflake_line:
+        for vertex in self.mountain_line:
             pygame.draw.line(surface, (60, 200, 60), (left_corner_x, vertex), (left_corner_x, self.height))
             left_corner_x += 1
 

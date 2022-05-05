@@ -28,12 +28,6 @@ g_z = 0
 bound = 3
 wind_strength = 10
 
-# @ti.func
-# def bound (xg_x: float) -> int:
-#     x = ti.cast(xg_x, int)
-#     terrian = {0:0, 1:1, 2:2, 3:3, 4:4, 5:5, 6:6, 7:7, 8:8, 9:9, 10:10, 11:11, 12:12, 13:13, 14:14, 15:15, 16:16}
-#     return terrian[x]
-
 E = 1000  # Young's modulus
 nu = 0.2  #  Poisson's ratio
 mu_0, lambda_0 = E / (2 * (1 + nu)), E * nu / (
@@ -346,36 +340,20 @@ snowfall_init_speed.extend(Gausian_terrain)
 
 presets = [ snowfall1,
             snowfall2,
-            Gausian_terrain_single,
             snowfall_init_speed,
+            Gausian_terrain_single,
            [
                CubeVolume(ti.Vector([0.05, 0.05, 0.05]),
                           ti.Vector([0.3, 0.4, 0.3]), WATER),
                CubeVolume(ti.Vector([0.65, 0.05, 0.65]),
                           ti.Vector([0.3, 0.4, 0.3]), SOIL),
-           ],
-           [
-               CubeVolume(ti.Vector([0.6, 0.05, 0.6]),
-                          ti.Vector([0.25, 0.25, 0.25]), WATER),
-               CubeVolume(ti.Vector([0.35, 0.35, 0.35]),
-                          ti.Vector([0.25, 0.25, 0.25]), SNOW),
-               CubeVolume(ti.Vector([0.05, 0.6, 0.05]),
-                          ti.Vector([0.25, 0.25, 0.25]), JELLY),
-           ],
-           [
-    CubeVolume(ti.Vector([0.1, 0.1, 0.1]), ti.Vector([0.8, 0.1, 0.8]),
-               SNOW),
-    CubeVolume(ti.Vector([0.25, 0.7, 0.25]),
-                          ti.Vector([0.24, 0.24, 0.24]), JELLY),
-]]
+           ]]
 preset_names = [
-    "Snow Falling Mountain",
-    "Snow Sheet Failing",
-    "Snow Meling In Water",
-    "Gaussian Mountain, Initial Velocity",
-    "Double Dam Break",
-    "Water Snow Jelly",
-    "snow",
+    "Snow Falling",
+    "Snow Sheet Falling - Step Mountain",
+    "Snow Sheet Falling - Gaussian Mountain",
+    "Snow Melting In Water",
+    "Tsunami",
 ]
 
 curr_preset_id = 0
@@ -387,7 +365,7 @@ particles_radius = 0.01
 
 use_random_wind = False
 
-material_colors = [(0.1, 0.6, 0.9), (0.93, 0.33, 0.23), (1.0, 1.0, 1.0), (0.2, 0.6, 0.2)]
+material_colors = [(0.1, 0.6, 0.9), (0.93, 0.33, 0.23), (1.0, 1.0, 1.0), (155/255, 118/255, 83/255)]
 
 
 def init():
