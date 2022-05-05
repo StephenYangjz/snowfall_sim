@@ -131,14 +131,14 @@ def compute_weight_grad(w01, w12, diff):
     w12d = [-0.5 * diffX ** 2 * diffX_sign + 2 * diffX - 2 * diffX_sign, -0.5 * diffY ** 2 * diffY_sign + 2 * diffY - 2 * diffY_sign, -0.5 * diffZ ** 2 * diffZ_sign + 2 * diffZ - 2 * diffZ_sign]
 
     #gradient of w in the case distance is >=0 <1
-    x_w = None
-    x_wdx = None
+    x_w = 0.0
+    x_wdx = 0.0
 
-    y_w = None
-    y_wdy = None
+    y_w = 0.0
+    y_wdy = 0.0
 
-    z_w = None
-    z_wdz = None
+    z_w = 0.0
+    z_wdz = 0.0
     if distances[0] < 1:
         x_w = w01[0]
         x_wdx = w01d[0]
@@ -187,7 +187,7 @@ def substep(g_x: float, g_y: float, g_z: float):
             #diffZ = Xp[2] - baseZ
             summation = ti.Matrix([[0,0,0], [0,0,0], [0,0,0]], ti.f32)
             #checks grid points up to 2 grid points away since N will be 0 where the distance between the points position and grid points is over 2
-            for offset in ti.static(ti.grouped(ti.ndrange(*grid_offsets))):
+            for offset in ti.grouped(ti.ndrange(*grid_offsets)):
                 #don't try to access negative grid indices
                 #if (baseX + offset[0] - 1 < 0):
                 #    continue
@@ -201,7 +201,7 @@ def substep(g_x: float, g_y: float, g_z: float):
                 grid_m[baseX + offset[0] - 1, baseY + offset[1] - 1, baseZ + offset[2] - 1] += weight * p_mass
                 grid_v[baseX + offset[0] - 1, baseY + offset[1] - 1, baseZ + offset[2] - 1] += weight * p_mass * v[p] #/ grid_m[baseX + offset[0] - 1, baseY + offset[1] - 1, baseZ + offset[2] - 1]
             #MPM step 3
-            for offset in ti.static(ti.grouped(ti.ndrange(*grid_offsets))):
+            for offset in ti.grouped(ti.ndrange(*grid_offsets)):
                 #don't try to access negative grid indices
                 
                 weight, w01, w12, diff = compute_weight(Xp, offset, baseX, baseY, baseZ)
@@ -217,7 +217,7 @@ def substep(g_x: float, g_y: float, g_z: float):
 
             sigma_p = psi_derivative(mu_0, lambda_0, xi, p) * F_E[p].transpose()
             neg_force_unweighted = p_vol * sigma_p
-            for offset in ti.static(ti.grouped(ti.ndrange(*grid_offsets))):
+            for offset in ti.grouped(ti.ndrange(*grid_offsets)):
                 #don't try to access negative grid indices
                 
                 weight, w01, w12, diff = compute_weight(Xp, offset, baseX, baseY, baseZ)
@@ -299,7 +299,7 @@ def substep(g_x: float, g_y: float, g_z: float):
             baseZ = int(Xp[2])
             new_v = ti.zero(v[p])
             new_C = ti.zero(C[p])
-            for offset in ti.static(ti.grouped(ti.ndrange(*grid_offsets))):
+            for offset in ti.grouped(ti.ndrange(*grid_offsets)):
 
                 #distance between particle position and grid position
                 diffX = Xp[0] - (baseX + offset[0] - 1)
@@ -368,7 +368,7 @@ def init_cube_vol(first_par: int, last_par: int, x_begin: float,
         F[i] = ti.Matrix([[1, 0, 0], [0, 1, 0], [0, 0, 1]])
         F_E[i] = ti.Matrix([[1, 0, 0], [0, 1, 0], [0, 0, 1]])
         #v[i] represents the velocity of particle i
-        v[i] = ti.Vector([3.0, 0.0, 0.0])
+        v[i] = ti.Vector([0.0, 0.0, 0.0])
         materials[i] = material
         colors_random[i] = ti.Vector(
             [ti.random(), ti.random(),
