@@ -36,7 +36,8 @@ nu = 0.2  #  Poisson's ratio
 mu_0, lambda_0 = E / (2 * (1 + nu)), E * nu / (
     (1 + nu) * (1 - 2 * nu))  # Lame parameters
 xi = 10 #snow's hardening coeficient
-
+theta_c = 0.025
+theta_s = 0.0075
 x = ti.Vector.field(dim, float, n_particles)
 v = ti.Vector.field(dim, float, n_particles)
 C = ti.Matrix.field(dim, dim, float, n_particles)
@@ -82,6 +83,11 @@ def psi_derivative(mu_0, lambda_0, xi, p):
     J_e = F_hat_ep[p].determinant()
     RE, _ = ti.polar_decompose(F_hat_ep[p])
     return 2 * lame_mu(mu_0, xi, J_p) * (F_hat_ep[p]-RE) + lame_lambda(lambda_0, xi, J_p) * (J_e-1) * J_e * F_hat_ep[p].transpose().inverse()
+@ti.func
+def clamp(sigma, theta_c, theta_s):
+    for d in ti.static(range(3)):
+        sigma[d, d] = min(max(sigma[d, d], 1 - theta_c), 1 + theta_s)
+    return sigma
 
 
 @ti.func
@@ -236,7 +242,6 @@ def substep(g_x: float, g_y: float, g_z: float):
                 #grid_m[baseX + offset[0] - 1, baseY + offset[1] - 1, baseZ + offset[2] - 1] += weight * p_mass
                 #grid_v[baseX + offset[0] - 1, baseY + offset[1] - 1, baseZ + offset[2] - 1] += weight * (p_mass * v[p]) / grid_m[baseX + offset[0] - 1, baseY + offset[1] - 1, baseZ + offset[2] - 1]
             #MPM step 4
-
         else:
             if used[p] == 0:
                 continue
@@ -281,11 +286,11 @@ def substep(g_x: float, g_y: float, g_z: float):
                 grid_v[base + offset] += weight * (p_mass * v[p] + affine @ dpos)
                 grid_m[base + offset] += weight * p_mass
 
-    #  particle interactions
+    #MPM step 4
     for I in ti.grouped(grid_m):
         if grid_m[I] > 0:
             grid_v[I] /= grid_m[I]
-        grid_v[I] += dt * ti.Vector([g_x, g_y, g_z])
+        grid_v[I] += dt * ti.Vector([g_x, g_y, g_z]) + dt / grid_m[I] * grid_f[I]
         
         cond = (I < bound) & (grid_v[I] < 0) | \
                (I > n_grid - bound) & (grid_v[I] > 0)
@@ -297,33 +302,31 @@ def substep(g_x: float, g_y: float, g_z: float):
             baseX = int(Xp[0]) 
             baseY = int(Xp[1])
             baseZ = int(Xp[2])
-            new_v = ti.zero(v[p])
-            new_C = ti.zero(C[p])
+            new_v_pic = ti.zero(v[p])
+            new_v_flip = ti.zero(v[p])
+            #MPM step 7 and 8
+            grad_v = ti.Matrix([[0,0,0], [0,0,0], [0,0,0]], ti.f32)
             for offset in ti.grouped(ti.ndrange(*grid_offsets)):
+                weight, w01, w12, diff = compute_weight(Xp, offset, baseX, baseY, baseZ)
 
-                #distance between particle position and grid position
-                diffX = Xp[0] - (baseX + offset[0] - 1)
-                diffY = Xp[1] - (baseY + offset[1] - 1)
-                diffZ = Xp[2] - (baseZ + offset[2] - 1)
-                abs_diffX = abs(diffX)
-                abs_diffY = abs(diffY)
-                abs_diffZ = abs(diffZ)
+                
+                #gradient of w in the case distance is >=0 <1
+                w_gradient = compute_weight_grad(w01, w12, diff)
 
-                distances = ti.Vector([abs_diffX, abs_diffY, abs_diffZ])
-
-                weight = 1.0
-                #equation to be used if distance between particle is < 1, w01[0] is the calcuation for the x position, w01[1] is calculation for the y position, etc
-                w01 = [0.5 * (abs_diffX)**3 - diffX**2 + 2.0 / 3.0,0.5 * (abs_diffY)**3 - diffY**2 + 2.0 / 3.0, 0.5 * (abs_diffZ)**3 - diffZ**2 + 2.0 / 3.0]
-                #equation to be used if distance between particle is > 1, w12[0] is the calcuation for the x position, w12[1] is calculation for the y position, etc (implicit less than 2 from offsets used)
-                w12 = [-1.0/6.0 * (abs_diffX)**3 + diffX**2 - 2 * abs_diffX + 4.0 / 3.0, -1.0/6.0 * (abs_diffY)**3 + diffY**2 - 2 * abs_diffY + 4.0 / 3.0, -1.0/6.0 * (abs_diffZ)**3 + diffZ**2 - 2 * abs_diffZ + 4.0 / 3.0]
-                for i in ti.static(range(dim)):
-                    if distances[i] < 1:
-                        weight *= w01[i]
-                    else:
-                        weight *= w12[i]
-                g_v = grid_v[baseX + offset[0] - 1, baseY + offset[1] - 1, baseZ + offset[2] - 1]
-                new_v += weight * g_v
-            v[p] = new_v
+                g_v_new = grid_v[baseX + offset[0] - 1, baseY + offset[1] - 1, baseZ + offset[2] - 1]
+                grad_v += g_v_new.outer_product(w_gradient)
+                #mpm step 8
+                g_v_old = grid_v_old[baseX + offset[0] - 1, baseY + offset[1] - 1, baseZ + offset[2] - 1]
+                new_v_pic += weight * g_v_new
+                new_v_flip += weight * (g_v_new - g_v_old) 
+            F_hat_ep_next = (ti.Matrix([[1,0,0], [0,1,0], [0,0,1]], ti.f32) + dt * grad_v) @ F_E[p]
+            U, Sigma, V = ti.svd(F_hat_ep_next)
+            Sigma = clamp(Sigma, theta_c, theta_s)
+            F_E[p] = U @ Sigma @ V.transpose()
+            F_P[p] = V @ Sigma.inverse() @ U.transpose() @ F_P[p]
+            F[p] = F_E[p] @ F_P[p]
+            #mpm step 10
+            v[p] = (1.0 - alpha) * new_v_pic + alpha * (v[p] + new_v_flip)
             x[p] += dt * v[p]
         else:
             if materials[p] == SOIL:
