@@ -1,10 +1,8 @@
-Python.Snowfall
+Taichi Snow Simulation
 ===============
 
-Snowfall simulation for SP2022 Final Project
+Snow simulation for SP2022 Final Project
 
-What we've done: mountain modeling, snow free falling, based on repo https://github.com/adamkdean/Python.Snowfall
+What we've done: snow physcs, mountain modeling, snow free falling, etc. with GUI based on Taichi water simulation example.
 
-TODO: partical simulation with gravity, stickiness, accumulated snow collapse when physics allows, and also possibly 3D simulation w/ NERF 
-
-By Stephen Yang, Rory Na, Prince Wang, Christian Kim
+By Prince Wang, Christian Kim, Stephen Yang, Rory Na
