@@ -17,11 +17,11 @@ print(n_particles)
 
 dx = 1 / n_grid
 
-p_rho = 1
+p_rho = 400
 p_vol = (dx * 0.5)**2
 p_mass = p_vol * p_rho
 g_x = 0
-g_y = -9.8
+g_y = 0
 g_z = 0
 bound = 3
 # @ti.func
@@ -31,7 +31,7 @@ bound = 3
 #     return terrian[x]
 
 alpha = 0.95
-E = 1000  # Young's modulus
+E = 140000  # Young's modulus
 nu = 0.2  #  Poisson's ratio
 mu_0, lambda_0 = E / (2 * (1 + nu)), E * nu / (
     (1 + nu) * (1 - 2 * nu))  # Lame parameters
@@ -85,13 +85,15 @@ def psi_derivative(mu_0, lambda_0, xi, p):
     return 2 * lame_mu(mu_0, xi, J_p) * (F_hat_ep[p]-RE) + lame_lambda(lambda_0, xi, J_p) * (J_e-1) * J_e * F_hat_ep[p].transpose().inverse()
 @ti.func
 def clamp(sigma, theta_c, theta_s):
+    ret = ti.Matrix([[0,0,0], [0,0,0], [0,0,0]])
     for d in ti.static(range(3)):
-        sigma[d, d] = min(max(sigma[d, d], 1 - theta_c), 1 + theta_s)
-    return sigma
+        ret[d, d] = min(max(sigma[d, d], 1 - theta_c), 1 + theta_s)
+    return ret
 
 
 @ti.func
 def compute_weight(Xp, offset, baseX, baseY, baseZ):
+
     diffX = Xp[0] - (baseX + offset[0] - 1)
     diffY = Xp[1] - (baseY + offset[1] - 1)
     diffZ = Xp[2] - (baseZ + offset[2] - 1)
@@ -179,6 +181,7 @@ def substep(g_x: float, g_y: float, g_z: float):
         grid_v_old[I] = grid_v[I]
         grid_v[I] = ti.zero(grid_v[I])
         grid_m[I] = 0
+        grid_f[I] = ti.zero(grid_f[I])
     ti.block_dim(n_grid)
     #p is index, not the particle itself
     for p in x:
@@ -195,12 +198,12 @@ def substep(g_x: float, g_y: float, g_z: float):
             #checks grid points up to 2 grid points away since N will be 0 where the distance between the points position and grid points is over 2
             for offset in ti.grouped(ti.ndrange(*grid_offsets)):
                 #don't try to access negative grid indices
-                #if (baseX + offset[0] - 1 < 0):
-                #    continue
-                #if (baseY + offset[1] - 1 < 0):
-                #    continue 
-                #if (baseZ + offset[2] - 1 < 0):
-                #    continue
+                if (baseX + offset[0] - 1 < 0):
+                   continue
+                if (baseY + offset[1] - 1 < 0):
+                   continue 
+                if (baseZ + offset[2] - 1 < 0):
+                   continue
                 #distance between particle position and grid position
                 weight, _, _, _ = compute_weight(Xp, offset, baseX, baseY, baseZ)
 
@@ -209,7 +212,12 @@ def substep(g_x: float, g_y: float, g_z: float):
             #MPM step 3
             for offset in ti.grouped(ti.ndrange(*grid_offsets)):
                 #don't try to access negative grid indices
-                
+                if (baseX + offset[0] - 1 < 0):
+                   continue
+                if (baseY + offset[1] - 1 < 0):
+                   continue 
+                if (baseZ + offset[2] - 1 < 0):
+                   continue
                 weight, w01, w12, diff = compute_weight(Xp, offset, baseX, baseY, baseZ)
 
                 
@@ -225,7 +233,12 @@ def substep(g_x: float, g_y: float, g_z: float):
             neg_force_unweighted = p_vol * sigma_p
             for offset in ti.grouped(ti.ndrange(*grid_offsets)):
                 #don't try to access negative grid indices
-                
+                if (baseX + offset[0] - 1 < 0):
+                   continue
+                if (baseY + offset[1] - 1 < 0):
+                   continue 
+                if (baseZ + offset[2] - 1 < 0):
+                   continue
                 weight, w01, w12, diff = compute_weight(Xp, offset, baseX, baseY, baseZ)
 
                 
@@ -286,7 +299,7 @@ def substep(g_x: float, g_y: float, g_z: float):
                 grid_v[base + offset] += weight * (p_mass * v[p] + affine @ dpos)
                 grid_m[base + offset] += weight * p_mass
 
-    #MPM step 4
+    #MPM step 4 and 6
     for I in ti.grouped(grid_m):
         if grid_m[I] > 0:
             grid_v[I] /= grid_m[I]
@@ -307,6 +320,12 @@ def substep(g_x: float, g_y: float, g_z: float):
             #MPM step 7 and 8
             grad_v = ti.Matrix([[0,0,0], [0,0,0], [0,0,0]], ti.f32)
             for offset in ti.grouped(ti.ndrange(*grid_offsets)):
+                if (baseX + offset[0] - 1 < 0):
+                   continue
+                if (baseY + offset[1] - 1 < 0):
+                   continue 
+                if (baseZ + offset[2] - 1 < 0):
+                   continue
                 weight, w01, w12, diff = compute_weight(Xp, offset, baseX, baseY, baseZ)
 
                 
@@ -318,12 +337,13 @@ def substep(g_x: float, g_y: float, g_z: float):
                 #mpm step 8
                 g_v_old = grid_v_old[baseX + offset[0] - 1, baseY + offset[1] - 1, baseZ + offset[2] - 1]
                 new_v_pic += weight * g_v_new
-                new_v_flip += weight * (g_v_new - g_v_old) 
+                new_v_flip += weight * (g_v_new - g_v_old)
+            #mpm step 7
             F_hat_ep_next = (ti.Matrix([[1,0,0], [0,1,0], [0,0,1]], ti.f32) + dt * grad_v) @ F_E[p]
             U, Sigma, V = ti.svd(F_hat_ep_next)
             Sigma = clamp(Sigma, theta_c, theta_s)
             F_E[p] = U @ Sigma @ V.transpose()
-            F_P[p] = V @ Sigma.inverse() @ U.transpose() @ F_P[p]
+            F_P[p] = V @ Sigma.inverse() @ U.transpose() @ F[p]
             F[p] = F_E[p] @ F_P[p]
             #mpm step 10
             v[p] = (1.0 - alpha) * new_v_pic + alpha * (v[p] + new_v_flip)
@@ -370,6 +390,8 @@ def init_cube_vol(first_par: int, last_par: int, x_begin: float,
         Jp[i] = 1
         F[i] = ti.Matrix([[1, 0, 0], [0, 1, 0], [0, 0, 1]])
         F_E[i] = ti.Matrix([[1, 0, 0], [0, 1, 0], [0, 0, 1]])
+        F_P[i] = ti.Matrix([[1, 0, 0], [0, 1, 0], [0, 0, 1]])
+        F_hat_ep[i] = ti.Matrix([[1, 0, 0], [0, 1, 0], [0, 0, 1]])
         #v[i] represents the velocity of particle i
         v[i] = ti.Vector([0.0, 0.0, 0.0])
         materials[i] = material
@@ -389,6 +411,9 @@ def set_all_unused():
         F[p] = ti.Matrix([[1, 0, 0], [0, 1, 0], [0, 0, 1]])
         C[p] = ti.Matrix([[0, 0, 0], [0, 0, 0], [0, 0, 0]])
         v[p] = ti.Vector([0.0, 0.0, 0.0])
+    for I in ti.grouped(grid_m): #sets all grid masses and velocities to 0, v_old keeps old grid velocities
+        grid_v[I] = ti.zero(grid_v[I])
+
 
 
 def init_vols(vols):
@@ -396,7 +421,6 @@ def init_vols(vols):
     total_vol = 0
     for v in vols:
         total_vol += v.volume
-
     next_p = 0
     for i in range(len(vols)):
         v = vols[i]
