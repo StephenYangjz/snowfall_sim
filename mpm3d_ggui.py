@@ -2,7 +2,7 @@ import numpy as np
 
 import taichi as ti
 
-arch = ti.vulkan if ti._lib.core.with_vulkan() else ti.cuda
+arch = ti.cuda if ti._lib.core.with_vulkan() else ti.cuda
 ti.init(arch=arch)
 
 # dim, n_grid, steps, dt = 2, 128, 20, 2e-4
@@ -21,7 +21,7 @@ p_rho = 400
 p_vol = (dx * 0.5)**2
 p_mass = p_vol * p_rho
 g_x = 0
-g_y = 0
+g_y = -9.8
 g_z = 0
 bound = 3
 # @ti.func
@@ -82,7 +82,7 @@ def psi_derivative(mu_0, lambda_0, xi, p):
     J_p = F_P[p].determinant()
     J_e = F_hat_ep[p].determinant()
     RE, _ = ti.polar_decompose(F_hat_ep[p])
-    return 2 * lame_mu(mu_0, xi, J_p) * (F_hat_ep[p]-RE) + lame_lambda(lambda_0, xi, J_p) * (J_e-1) * J_e * F_hat_ep[p].transpose().inverse()
+    return (2.0 * lame_mu(mu_0, xi, J_p) * (F_hat_ep[p]-RE) + lame_lambda(lambda_0, xi, J_p) * (J_e-1) * J_e * F_hat_ep[p].transpose().inverse()) / J_p
 @ti.func
 def clamp(sigma, theta_c, theta_s):
     ret = ti.Matrix([[0.0,0.0,0.0], [0.0,0.0,0.0], [0.0,0.0,0.0]])
@@ -121,7 +121,9 @@ def compute_weight(Xp, offset, baseX, baseY, baseZ):
 @ti.func
 def compute_weight_grad(w01, w12, diff):
 
-    (diffX, diffY, diffZ) = diff
+    diffX = diff[0]
+    diffY = diff[1]
+    diffZ = diff[2]
     abs_diffX = abs(diffX)
     abs_diffY = abs(diffY)
     abs_diffZ = abs(diffZ)
@@ -173,7 +175,7 @@ def compute_weight_grad(w01, w12, diff):
 
     w_grad = ti.Vector([y_w * z_w * x_wdx, x_w * z_w * y_wdy, x_w * y_w * z_wdz])
 
-    return w_grad
+    return w_grad / dx
 
 @ti.kernel
 def substep(g_x: float, g_y: float, g_z: float):
@@ -209,7 +211,17 @@ def substep(g_x: float, g_y: float, g_z: float):
 
                 grid_m[baseX + offset[0] - 1, baseY + offset[1] - 1, baseZ + offset[2] - 1] += weight * p_mass
                 grid_v[baseX + offset[0] - 1, baseY + offset[1] - 1, baseZ + offset[2] - 1] += weight * p_mass * v[p] #/ grid_m[baseX + offset[0] - 1, baseY + offset[1] - 1, baseZ + offset[2] - 1]
+    for p in x:
+        if materials[p] == SNOW:
             #MPM step 3
+            Xp = x[p] / dx #scaling particles position to match grid space?
+            baseX = int(Xp[0]) 
+            baseY = int(Xp[1])
+            baseZ = int(Xp[2])
+            #diffX = Xp[0] - baseX
+            #diffY = Xp[1] - baseY
+            #diffZ = Xp[2] - baseZ
+            summation = ti.Matrix([[0,0,0], [0,0,0], [0,0,0]], ti.f32)
             for offset in ti.grouped(ti.ndrange(*grid_offsets)):
                 #don't try to access negative grid indices
                 if (baseX + offset[0] - 1 < 0):
@@ -225,14 +237,16 @@ def substep(g_x: float, g_y: float, g_z: float):
                 w_gradient = compute_weight_grad(w01, w12, diff)
 
                 velocity = grid_v[baseX + offset[0] - 1, baseY + offset[1] - 1, baseZ + offset[2] - 1]
+                #we hadn't yet scaled grid velocity by grid mass in step 1 because not all grid masses were updated yet
                 if (grid_m[baseX + offset[0] - 1, baseY + offset[1] - 1, baseZ + offset[2] - 1] > 0):
                     velocity /= grid_m[baseX + offset[0] - 1, baseY + offset[1] - 1, baseZ + offset[2] - 1]
-                summation += dt * velocity.outer_product(w_gradient)
+                summation += velocity.outer_product(w_gradient)
             identity = ti.Matrix([[1.0,0.0,0.0], [0.0,1.0,0.0], [0.0,0.0,1.0]], ti.f32)
-            F_hat_ep[p] = (identity + summation) @ F_E[p]
+            F_hat_ep[p] = (identity + dt * summation) @ F_E[p]
 
             sigma_p = psi_derivative(mu_0, lambda_0, xi, p) @ F_E[p].transpose()
             neg_force_unweighted = p_vol * sigma_p
+            #print('neg_force_unweighted', neg_force_unweighted)
             for offset in ti.grouped(ti.ndrange(*grid_offsets)):
                 #don't try to access negative grid indices
                 if (baseX + offset[0] - 1 < 0):
@@ -246,9 +260,7 @@ def substep(g_x: float, g_y: float, g_z: float):
                 
                 #gradient of w in the case distance is >=0 <1
                 w_gradient = compute_weight_grad(w01, w12, diff)
-
                 grid_f[baseX + offset[0] - 1, baseY + offset[1] - 1, baseZ + offset[2] - 1] -= neg_force_unweighted @ w_gradient
-
                 #for i in ti.static(range(dim)):
                 #    if distances[i] < 1:
                 #        weight *= w01[i]
@@ -342,12 +354,14 @@ def substep(g_x: float, g_y: float, g_z: float):
                 new_v_pic += weight * g_v_new
                 new_v_flip += weight * (g_v_new - g_v_old)
             #mpm step 7
-            F_hat_ep_next = (ti.Matrix([[1,0,0], [0,1,0], [0,0,1]], ti.f32) + dt * grad_v) @ F_E[p]
+
+            F_hat_ep_next = (ti.Matrix([[1.0,0.0,0.0], [0.0,1.0,0.0], [0.0,0.0,1.0]], ti.f32) + dt * grad_v) @ F_E[p]
+            F[p] = F_hat_ep_next @ F_P[p]
             U, Sigma, V = ti.svd(F_hat_ep_next)
             Sigma = clamp(Sigma, theta_c, theta_s)
             F_E[p] = U @ Sigma @ V.transpose()
             F_P[p] = V @ Sigma.inverse() @ U.transpose() @ F[p]
-            F[p] = F_E[p] @ F_P[p]
+
             #mpm step 10
             v[p] = (1.0 - alpha) * new_v_pic + alpha * (v[p] + new_v_flip)
             x[p] += dt * v[p]
