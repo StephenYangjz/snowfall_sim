@@ -85,7 +85,7 @@ def psi_derivative(mu_0, lambda_0, xi, p):
     return 2 * lame_mu(mu_0, xi, J_p) * (F_hat_ep[p]-RE) + lame_lambda(lambda_0, xi, J_p) * (J_e-1) * J_e * F_hat_ep[p].transpose().inverse()
 @ti.func
 def clamp(sigma, theta_c, theta_s):
-    ret = ti.Matrix([[0,0,0], [0,0,0], [0,0,0]])
+    ret = ti.Matrix([[0.0,0.0,0.0], [0.0,0.0,0.0], [0.0,0.0,0.0]])
     for d in ti.static(range(3)):
         ret[d, d] = min(max(sigma[d, d], 1 - theta_c), 1 + theta_s)
     return ret
@@ -139,14 +139,14 @@ def compute_weight_grad(w01, w12, diff):
     w12d = [-0.5 * diffX ** 2 * diffX_sign + 2 * diffX - 2 * diffX_sign, -0.5 * diffY ** 2 * diffY_sign + 2 * diffY - 2 * diffY_sign, -0.5 * diffZ ** 2 * diffZ_sign + 2 * diffZ - 2 * diffZ_sign]
 
     #gradient of w in the case distance is >=0 <1
-    x_w = 0.0
-    x_wdx = 0.0
+    x_w = 100.0
+    x_wdx = 100.0
 
-    y_w = 0.0
-    y_wdy = 0.0
+    y_w = 100.0
+    y_wdy = 100.0
 
-    z_w = 0.0
-    z_wdz = 0.0
+    z_w = 100.0
+    z_wdz = 100.0
     if distances[0] < 1:
         x_w = w01[0]
         x_wdx = w01d[0]
@@ -171,9 +171,9 @@ def compute_weight_grad(w01, w12, diff):
 
 
 
-    w_gradient = ti.Vector([y_w * z_w * x_wdx, x_w * z_w * y_wdy, x_w * y_w * z_wdz])
+    w_grad = ti.Vector([y_w * z_w * x_wdx, x_w * z_w * y_wdy, x_w * y_w * z_wdz])
 
-    return w_gradient
+    return w_grad
 
 @ti.kernel
 def substep(g_x: float, g_y: float, g_z: float):
@@ -225,11 +225,13 @@ def substep(g_x: float, g_y: float, g_z: float):
                 w_gradient = compute_weight_grad(w01, w12, diff)
 
                 velocity = grid_v[baseX + offset[0] - 1, baseY + offset[1] - 1, baseZ + offset[2] - 1]
+                if (grid_m[baseX + offset[0] - 1, baseY + offset[1] - 1, baseZ + offset[2] - 1] > 0):
+                    velocity /= grid_m[baseX + offset[0] - 1, baseY + offset[1] - 1, baseZ + offset[2] - 1]
                 summation += dt * velocity.outer_product(w_gradient)
-            identity = ti.Matrix([[1,0,0], [0,1,0], [0,0,1]], ti.f32)
-            F_hat_ep[p] = (identity + summation) * F_E[p]
+            identity = ti.Matrix([[1.0,0.0,0.0], [0.0,1.0,0.0], [0.0,0.0,1.0]], ti.f32)
+            F_hat_ep[p] = (identity + summation) @ F_E[p]
 
-            sigma_p = psi_derivative(mu_0, lambda_0, xi, p) * F_E[p].transpose()
+            sigma_p = psi_derivative(mu_0, lambda_0, xi, p) @ F_E[p].transpose()
             neg_force_unweighted = p_vol * sigma_p
             for offset in ti.grouped(ti.ndrange(*grid_offsets)):
                 #don't try to access negative grid indices
@@ -303,7 +305,8 @@ def substep(g_x: float, g_y: float, g_z: float):
     for I in ti.grouped(grid_m):
         if grid_m[I] > 0:
             grid_v[I] /= grid_m[I]
-        grid_v[I] += dt * ti.Vector([g_x, g_y, g_z]) + dt / grid_m[I] * grid_f[I]
+            grid_v[I] += dt / grid_m[I] * grid_f[I]
+        grid_v[I] += dt * ti.Vector([g_x, g_y, g_z]) 
         
         cond = (I < bound) & (grid_v[I] < 0) | \
                (I > n_grid - bound) & (grid_v[I] > 0)
