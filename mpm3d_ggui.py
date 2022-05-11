@@ -537,8 +537,8 @@ Gausian_terrain_single = []
 for i in range(len(Gausian_xx)):
     for j in range(len(Gausian_yy)):
         zz = Gausian_z[i][j] - 0.5
-        if zz > 0.2:
-            single_terrian = CubeVolume(ti.Vector([Gausian_xx[i], 0.1, Gausian_yy[j]]),
+        if zz > 0.25:
+            single_terrian = CubeVolume(ti.Vector([Gausian_xx[i], 0.4, Gausian_yy[j]]),
                                 ti.Vector([0.05, zz, 0.05]), SNOW)
             Gausian_terrain_single.append(single_terrian)
         # else:
